@@ -6,3 +6,6 @@ zig-out/
 *.dylib
 *.so
 .DS_Store
+target/
+**/target/
+bindings/rust/target/

@@ -19,9 +19,10 @@ High-performance benchmarks for `async-worker-pool_zig` comparing native Zig 0.1
 | **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (32 Workers) | **3.49 M msg/sec** | **667 ns** (0.67 µs) | **286.24 ns** (0.29 µs) | **286.24 ms** |
 | **`async-worker-pool_zig`** | Zig 0.16 | Pure Concurrent SPSC Ring (0 CAS) | **65.32 M ops/sec** | **< 15 ns** | **15.31 ns** | **15.31 ms** |
 | **`async-worker-pool_zig`** | Zig 0.16 | Raw Single-Ring + SIMD Stream | **11.59 M ops/sec** | **< 90 ns** | **86.27 ns** | **86.27 ms** |
+| **`awp-zig-rs`** ([`bindings/rust`](../bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **2.89 M msg/sec** | **690 ns** (0.69 µs) | **345.71 ns** (0.35 µs) | **345.71 ms** |
 | **`async-worker-pool`** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3,458 ns** (3.46 µs) | **2,109.45 ns** (2.11 µs) | **1,936.02 ms** |
 | **`async-worker-pool`** | C11 | Raw SPSC Ring | **62.50 M msg/sec** | **< 16 ns** | **16.00 ns** | **16.00 ms** |
-| **`awp-rs`** | Rust | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3,350 ns** (3.35 µs) | **1,870.17 ns** (1.87 µs) | **1,870.17 ms** |
+| **`awp-rs`** | Rust on C11 | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3,350 ns** (3.35 µs) | **1,870.17 ns** (1.87 µs) | **1,870.17 ms** |
 
 ---
 

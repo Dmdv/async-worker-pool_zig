@@ -1,19 +1,25 @@
 const std = @import("std");
 
-pub const AWP_FEED_MAX = 64;
-pub const AWP_SYMBOL_MAX = 64;
-pub const AWP_PAYLOAD_MAX = 4096;
+pub const types = @import("types.zig");
+pub const AWP_FEED_MAX = types.AWP_FEED_MAX;
+pub const AWP_SYMBOL_MAX = types.AWP_SYMBOL_MAX;
+pub const AWP_PAYLOAD_MAX = types.AWP_PAYLOAD_MAX;
+pub const Frame = types.Frame;
+pub const Claim = types.Claim;
 
-pub const Frame = struct {
-    feed: [AWP_FEED_MAX + 1]u8 = [_]u8{0} ** (AWP_FEED_MAX + 1),
-    symbol: [AWP_SYMBOL_MAX + 1]u8 = [_]u8{0} ** (AWP_SYMBOL_MAX + 1),
-    payload: [AWP_PAYLOAD_MAX]u8 = [_]u8{0} ** AWP_PAYLOAD_MAX,
-    payload_len: usize = 0,
-    seq: u64 = 0,
-    submit_ns: u64 = 0,
-    shard: u32 = 0,
-    flags: u32 = 0,
-};
+pub const c_abi = @import("c_abi.zig");
+pub const DynamicPool = c_abi.DynamicPool;
+pub const DynamicRing = c_abi.DynamicRing;
+pub const awp_zig_pool_create = c_abi.awp_zig_pool_create;
+pub const awp_zig_pool_destroy = c_abi.awp_zig_pool_destroy;
+pub const awp_zig_claim = c_abi.awp_zig_claim;
+pub const awp_zig_commit = c_abi.awp_zig_commit;
+pub const awp_zig_submit = c_abi.awp_zig_submit;
+
+comptime {
+    _ = c_abi;
+    _ = types;
+}
 
 /// High-performance SIMD checksum using Zig 0.16 @Vector primitives
 pub inline fn fastSum64(ptr: [*]const u8) u32 {
@@ -130,12 +136,6 @@ pub fn SpscRing(comptime capacity: usize) type {
     };
 }
 
-/// Claim token for Zero-Copy enqueue
-pub const Claim = struct {
-    frame: *Frame,
-    shard: u32,
-    pos: usize,
-};
 
 /// Bounded MPMC / MPSC Lock-Free Ring Buffer with Embedded Pre-allocated Slabs
 pub fn LockFreeRing(comptime capacity: usize) type {

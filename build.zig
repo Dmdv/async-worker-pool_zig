@@ -8,8 +8,18 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
+    // 1. Static Library for C / Rust FFI (libawp_zig.a)
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "awp_zig",
+        .root_module = awp_mod,
+    });
+    b.installArtifact(lib);
+
+    // 2. Dispatch Benchmark Executable
     const bench_exe = b.addExecutable(.{
         .name = "bench_dispatch",
         .root_module = b.createModule(.{
