@@ -2,6 +2,7 @@ const std = @import("std");
 const awp = @import("awp");
 const c_stdio = @cImport({
     @cInclude("stdio.h");
+    @cInclude("stdlib.h");
 });
 
 const NUM_MSGS = 1_000_000;
@@ -30,7 +31,7 @@ fn benchProcess(frame: *const awp.Frame) void {
     _ = g_stats[shard].done.fetchAdd(1, .release);
 }
 
-pub fn main(init: std.process.Init) !void {
+pub fn main() !void {
     std.debug.print("\n=== Zig 0.16 Multi-Threaded Arena Pool & SIMD Dispatch Benchmark ===\n", .{});
     awp.pinToPerformanceCores();
 
@@ -295,12 +296,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Pure SPSC Ring Mean Latency: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });
 
     var json_path: ?[]const u8 = null;
-    var it = std.process.Args.Iterator.init(init.minimal.args);
-    _ = it.skip(); // skip binary name
-    while (it.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--json")) {
-            json_path = it.next();
-        }
+    const env_val = c_stdio.getenv("BENCH_JSON_OUT");
+    if (env_val != null) {
+        json_path = std.mem.span(env_val);
     }
 
     if (json_path) |path| {

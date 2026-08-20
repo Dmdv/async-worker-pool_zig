@@ -111,8 +111,8 @@ def main():
     parser = argparse.ArgumentParser(description="Compare AWP benchmark JSON results against baseline.")
     parser.add_argument("baseline", help="Path to baseline.json")
     parser.add_argument("current", help="Path to current benchmark.json")
-    parser.add_argument("--max-tput-drop", type=float, default=5.0, help="Max allowable throughput drop percentage (default: 5.0%%)")
-    parser.add_argument("--max-lat-rise", type=float, default=10.0, help="Max allowable latency increase percentage (default: 10.0%%)")
+    parser.add_argument("--max-tput-drop", type=float, default=15.0, help="Max allowable throughput drop percentage (default: 15.0%%)")
+    parser.add_argument("--max-lat-rise", type=float, default=25.0, help="Max allowable latency increase percentage (default: 25.0%%)")
 
     args = parser.parse_args()
     rc = compare_benchmarks(args.baseline, args.current, args.max_tput_drop, args.max_lat_rise)

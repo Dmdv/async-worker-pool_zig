@@ -16,11 +16,11 @@ bench:
 
 bench-baseline:
 	@mkdir -p benchmarks
-	zig build bench -Doptimize=ReleaseFast -- --json benchmarks/baseline.json
+	BENCH_JSON_OUT=benchmarks/baseline.json zig build bench -Doptimize=ReleaseFast
 
 bench-compare:
 	@mkdir -p benchmarks
-	zig build bench -Doptimize=ReleaseFast -- --json /tmp/awp_current_bench.json
+	BENCH_JSON_OUT=/tmp/awp_current_bench.json zig build bench -Doptimize=ReleaseFast
 	python3 scripts/bench_compare.py benchmarks/baseline.json /tmp/awp_current_bench.json
 
 check-rust:
