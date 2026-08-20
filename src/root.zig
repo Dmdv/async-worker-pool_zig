@@ -256,8 +256,8 @@ pub fn SpscRing(comptime T: type, comptime capacity: usize) type {
         pub fn initSlab(slab: *HftMemorySlab) !Self {
             const needed_bytes = capacity * @sizeOf(T);
             if (slab.len < needed_bytes) return error.SlabTooSmall;
-            if (@intFromPtr(slab.ptr) % 64 != 0) return error.UnalignedSlab;
-            const ptr: [*]T = @ptrCast(@alignCast(slab.ptr));
+            if ((@intFromPtr(slab.ptr) & 63) != 0) return error.SlabUnaligned;
+            const ptr: [*]align(64) T = @ptrCast(@alignCast(slab.ptr));
             return Self{
                 .items = ptr[0..capacity],
                 .head = std.atomic.Value(usize).init(0),
