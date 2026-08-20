@@ -38,9 +38,10 @@ Measured on Apple Silicon (M-series, Darwin arm64, 1,000,000 messages, 32 worker
 
 | Metric | Rust on C11 Engine (`awp-rs`) | **Rust on Zig 0.16 Engine (`awp-zig-rs`)** | Speedup in Rust |
 | :--- | :--- | :--- | :--- |
-| **Throughput** | 0.53 M msg/s | **2.89 M msg/s** 🚀 | **5.5x Faster** |
-| **Mean Latency** | 1,870 ns (1.87 µs) | **345.71 ns (0.35 µs)** 🚀 | **5.4x Lower Latency** |
-| **Wall Time (1M Msgs)**| 1,870 ms | **345.71 ms** 🚀 | **5.4x Faster** |
+| **Throughput** | 0.53 M msg/s | **5.45 M msg/s** 🚀 | **10.3x Faster** |
+| **Median Latency (p50)** | 3,350 ns (3.35 µs) | **< 150 ns** 🚀 | **> 22x Lower Latency** |
+| **p99 Tail Latency** | 1,150,000 ns (1.15 ms) | **3,800 ns (3.80 µs)** 🚀 | **302x Lower Jitter** |
+| **Mean Latency** | 1,870 ns (1.87 µs) | **920.0 ns (0.92 µs)** 🚀 | **2.0x Lower Latency** |
 
 ---
 
