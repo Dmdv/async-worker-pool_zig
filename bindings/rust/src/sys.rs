@@ -5,6 +5,7 @@ use std::os::raw::{c_char, c_int, c_void};
 pub const AWP_FEED_MAX: usize = 64;
 pub const AWP_SYMBOL_MAX: usize = 64;
 pub const AWP_PAYLOAD_MAX: usize = 4096;
+pub const AWP_FLAG_DROPPED: u32 = 0x8000_0000;
 
 #[repr(C)]
 pub struct AwpFrame {

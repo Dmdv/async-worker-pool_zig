@@ -11,7 +11,7 @@ pub mod error;
 pub mod sys;
 
 pub use error::AwpError;
-pub use sys::{AWP_FEED_MAX, AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX};
+pub use sys::{AWP_FEED_MAX, AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX};
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -183,11 +183,13 @@ impl<'a> ClaimGuard<'a> {
 impl<'a> Drop for ClaimGuard<'a> {
     fn drop(&mut self) {
         if !self.committed {
-            // Auto-commit a no-op frame to prevent stalling the sequence ring
+            // Auto-commit a no-op tombstone frame to prevent stalling the sequence ring
             unsafe {
                 let f = &mut *self.claim.frame;
                 f.payload_len = 0;
-                f.flags = 0x8000_0000; // AWP_FLAG_DROPPED
+                f.flags = sys::AWP_FLAG_DROPPED;
+                f.feed[0] = 0;
+                f.symbol[0] = 0;
                 let _ = sys::awp_zig_commit(self.pool.handle, &self.claim);
             }
             self.committed = true;
