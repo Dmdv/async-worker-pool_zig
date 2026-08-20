@@ -17,14 +17,10 @@ pub const Frame = struct {
 
 /// High-performance SIMD checksum using Zig 0.16 @Vector primitives
 pub inline fn fastSum64(ptr: [*]const u8) u32 {
-    const V = @Vector(16, u8);
-    const v0: V = ptr[0..16].*;
-    const v1: V = ptr[16..32].*;
-    const v2: V = ptr[32..48].*;
-    const v3: V = ptr[48..64].*;
-    const s_total: @Vector(16, u16) = (@as(@Vector(16, u16), v0) + @as(@Vector(16, u16), v1)) +
-        (@as(@Vector(16, u16), v2) + @as(@Vector(16, u16), v3));
-    return @reduce(.Add, s_total);
+    const V = @Vector(64, u8);
+    const v: V = ptr[0..64].*;
+    const v_wide: @Vector(64, u16) = v;
+    return @reduce(.Add, v_wide);
 }
 
 /// Nanosecond timestamp reader using native CPU timer register
@@ -67,9 +63,9 @@ pub fn LockFreeRing(comptime capacity: usize) type {
         const Self = @This();
         const mask = capacity - 1;
 
+        // Ultra-dense 8-byte sequence cell: exactly 8 cells fit into one 64-byte cacheline
         const Cell = struct {
             sequence: std.atomic.Value(usize),
-            data: ?*Frame,
         };
 
         cells: []Cell,
@@ -83,7 +79,6 @@ pub fn LockFreeRing(comptime capacity: usize) type {
             const frames = try allocator.alloc(Frame, capacity);
             for (cells, 0..) |*cell, i| {
                 cell.sequence = std.atomic.Value(usize).init(i);
-                cell.data = &frames[i];
             }
             return Self{
                 .cells = cells,
@@ -114,6 +109,7 @@ pub fn LockFreeRing(comptime capacity: usize) type {
                     const f = &self.frames[pos & mask];
                     f.shard = shard;
                     f.submit_ns = nowNs();
+                    @prefetch(&self.frames[(pos + 1) & mask], .{ .rw = .write, .locality = 3, .cache = .data });
                     return Claim{
                         .frame = f,
                         .shard = shard,
@@ -129,11 +125,10 @@ pub fn LockFreeRing(comptime capacity: usize) type {
 
         pub inline fn commit(self: *Self, c: Claim) void {
             const cell = &self.cells[c.pos & mask];
-            cell.data = c.frame;
             cell.sequence.store(c.pos + 1, .release);
         }
 
-        pub inline fn tryPush(self: *Self, data: *Frame) bool {
+        pub inline fn tryPush(self: *Self, data: *const Frame) bool {
             var pos = self.enqueue_pos.load(.monotonic);
             while (true) {
                 const cell = &self.cells[pos & mask];
@@ -149,7 +144,6 @@ pub fn LockFreeRing(comptime capacity: usize) type {
                     if (data != slot_f) {
                         slot_f.* = data.*;
                     }
-                    cell.data = slot_f;
                     cell.sequence.store(pos + 1, .release);
                     return true;
                 } else if (dif < 0) {
@@ -161,25 +155,19 @@ pub fn LockFreeRing(comptime capacity: usize) type {
         }
 
         pub inline fn tryPop(self: *Self) ?*Frame {
-            var pos = self.dequeue_pos.load(.monotonic);
-            while (true) {
-                const cell = &self.cells[pos & mask];
-                const seq = cell.sequence.load(.acquire);
-                const dif: isize = @as(isize, @bitCast(seq)) - @as(isize, @bitCast(pos + 1));
+            const pos = self.dequeue_pos.load(.monotonic);
+            const cell = &self.cells[pos & mask];
+            const seq = cell.sequence.load(.acquire);
+            const dif: isize = @as(isize, @bitCast(seq)) - @as(isize, @bitCast(pos + 1));
 
-                if (dif == 0) {
-                    if (self.dequeue_pos.cmpxchgWeak(pos, pos + 1, .acq_rel, .monotonic)) |next_pos| {
-                        pos = next_pos;
-                        continue;
-                    }
-                    const data = cell.data orelse &self.frames[pos & mask];
-                    cell.sequence.store(pos + capacity, .release);
-                    return data;
-                } else if (dif < 0) {
-                    return null; // Queue empty
-                } else {
-                    pos = self.dequeue_pos.load(.monotonic);
-                }
+            if (dif == 0) {
+                self.dequeue_pos.store(pos + 1, .monotonic);
+                const data = &self.frames[pos & mask];
+                @prefetch(&self.frames[(pos + 1) & mask], .{ .rw = .read, .locality = 3, .cache = .data });
+                cell.sequence.store(pos + capacity, .release);
+                return data;
+            } else {
+                return null;
             }
         }
     };
