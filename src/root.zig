@@ -302,6 +302,9 @@ pub fn LockFreeRing(comptime capacity: usize) type {
                     const f = &self.frames[pos & mask];
                     f.shard = shard;
                     f.flags = 0;
+                    f.feed[0] = 0;
+                    f.symbol[0] = 0;
+                    f.payload_len = 0;
                     f.submit_ns = nowNs();
                     @prefetch(&self.frames[(pos + PREFETCH_DISTANCE) & mask], .{ .rw = .write, .locality = 3, .cache = .data });
                     return Claim{

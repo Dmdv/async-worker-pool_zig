@@ -55,6 +55,9 @@ pub const DynamicRing = struct {
                 const f = &self.frames[pos & self.mask];
                 f.shard = shard;
                 f.flags = 0;
+                f.feed[0] = 0;
+                f.symbol[0] = 0;
+                f.payload_len = 0;
                 f.submit_ns = root.nowNs();
                 @prefetch(&self.frames[(pos + 1) & self.mask], .{ .rw = .write, .locality = 3, .cache = .data });
                 return Claim{
@@ -122,8 +125,16 @@ pub const DynamicPool = struct {
         const rings = try allocator.alloc(DynamicRing, num_workers);
         errdefer allocator.free(rings);
 
+        var initialized_rings: usize = 0;
+        errdefer {
+            for (rings[0..initialized_rings]) |*r| {
+                r.deinit();
+            }
+        }
+
         for (rings) |*r| {
             r.* = try DynamicRing.init(allocator, queue_capacity);
+            initialized_rings += 1;
         }
 
         const threads = try allocator.alloc(std.Thread, num_workers);
