@@ -433,6 +433,64 @@ pub fn main() !void {
     std.debug.print("Variable-Length BipRing Throughput: {d:.2} M pkts/sec (Service Time: {d:.2} ns/pkt)\n", .{ bip_throughput / 1e6, bip_service_time });
     std.debug.print("Variable-Length BipRing Mean Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ bip_avg_lat, bip_avg_lat / 1000.0, bip_ctx.csum.load(.monotonic) });
 
+    // -------------------------------------------------------------------------------------
+    // Section 7: Phase 4 Hybrid Fast-Path Trading Reactor & Concurrent Off-Path Pipeline
+    // -------------------------------------------------------------------------------------
+    std.debug.print("=== Zig 0.16 Hybrid Fast-Path Trading Reactor & Off-Path Pipeline ===\n", .{});
+    const REACTOR_TICKS = 2_000_000;
+
+    var offpath = try awp.OffPathPipeline.init(backing_allocator);
+    defer offpath.deinit();
+    try offpath.start();
+
+    var reactor = awp.TradingReactor(awp.OffPathPipeline.QUEUE_CAP).init();
+    reactor.bindRiskRing(&offpath.risk_ring);
+    reactor.bindAuditRing(&offpath.audit_ring);
+    reactor.bindTelemetryRing(&offpath.telemetry_ring);
+
+    var dummy_update = awp.BookUpdate64{
+        .timestamp_ns = 0,
+        .seq = 0,
+        .symbol_id = 1,
+        .flags = 0x01,
+        .bid_price = 65000.0,
+        .bid_qty = 1.5,
+        .ask_price = 65000.5,
+        .ask_qty = 2.0,
+    };
+
+    const reactor_t0 = awp.nowNs();
+    for (0..REACTOR_TICKS) |i| {
+        dummy_update.timestamp_ns = awp.nowNs();
+        dummy_update.seq = i + 1;
+        dummy_update.bid_price = 65000.0 + @as(f64, @floatFromInt(i % 100)) * 0.1;
+        dummy_update.ask_price = dummy_update.bid_price + 0.5;
+
+        _ = reactor.processTick(dummy_update);
+    }
+    const reactor_t1 = awp.nowNs();
+
+    const reactor_duration_ns = @as(f64, @floatFromInt(reactor_t1 - reactor_t0));
+    const reactor_duration_sec = reactor_duration_ns / 1_000_000_000.0;
+    const reactor_throughput = @as(f64, @floatFromInt(REACTOR_TICKS)) / reactor_duration_sec;
+    const reactor_mean_lat = reactor_duration_ns / @as(f64, @floatFromInt(REACTOR_TICKS));
+
+    var wait_attempts: usize = 0;
+    while ((!offpath.risk_ring.isEmpty() or !offpath.audit_ring.isEmpty() or !offpath.telemetry_ring.isEmpty()) and wait_attempts < 1000) : (wait_attempts += 1) {
+        awp.sleepNs(100_000);
+    }
+
+    std.debug.print("Trading Reactor Fast-Path Throughput: {d:.2} M ticks/sec (Tick-to-Trade: {d:.2} ns)\n", .{
+        reactor_throughput / 1e6,
+        reactor_mean_lat,
+    });
+    std.debug.print("Off-Path Workers Processed: Risk={d} | Audit={d} | Telemetry={d} | Overruns={d}\n\n", .{
+        offpath.risk_processed.load(.monotonic),
+        offpath.audit_processed.load(.monotonic),
+        offpath.telemetry_processed.load(.monotonic),
+        reactor.getOverrunCount(),
+    });
+
     var json_path: ?[]const u8 = null;
     const env_val = c_stdio.getenv("BENCH_JSON_OUT");
     if (env_val != null) {
@@ -461,7 +519,9 @@ pub fn main() !void {
             \\  "spsc64_throughput_mops": {d:.2},
             \\  "spsc64_mean_ns": {d:.2},
             \\  "bip_throughput_mops": {d:.2},
-            \\  "bip_mean_ns": {d:.2}
+            \\  "bip_mean_ns": {d:.2},
+            \\  "reactor_throughput_mps": {d:.2},
+            \\  "reactor_mean_ns": {d:.2}
             \\}}
             \\
         , .{
@@ -483,6 +543,8 @@ pub fn main() !void {
             pod_avg_lat,
             bip_throughput / 1e6,
             bip_avg_lat,
+            reactor_throughput / 1e6,
+            reactor_mean_lat,
         });
         var path_z: [1024:0]u8 = undefined;
         @memcpy(path_z[0..path.len], path);

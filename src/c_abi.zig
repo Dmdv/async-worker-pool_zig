@@ -545,10 +545,10 @@ pub fn DynamicSpscRing(comptime T: type) type {
         const Self = @This();
         items: []T,
         head: std.atomic.Value(usize) align(64),
+        cached_tail: usize align(64),
         tail: std.atomic.Value(usize) align(64),
-        cached_head: usize,
-        cached_tail: usize,
-        capacity: usize,
+        cached_head: usize align(64),
+        capacity: usize align(64),
         mask: usize,
         allocator: std.mem.Allocator,
 
@@ -558,9 +558,9 @@ pub fn DynamicSpscRing(comptime T: type) type {
             return Self{
                 .items = items,
                 .head = std.atomic.Value(usize).init(0),
+                .cached_tail = 0,
                 .tail = std.atomic.Value(usize).init(0),
                 .cached_head = 0,
-                .cached_tail = 0,
                 .capacity = capacity,
                 .mask = capacity - 1,
                 .allocator = allocator,
@@ -744,4 +744,399 @@ pub export fn awp_zig_bipring_release(ring_ptr: ?*anyopaque, desc: *const root.P
         const ring: *DynamicBipRing = @ptrCast(@alignCast(ptr));
         ring.releasePacket(desc.*);
     }
+}
+
+// -----------------------------------------------------------------------------------------
+// Phase 4: Hybrid Fast-Path Trading Reactor & Off-Path Worker Pipeline C ABI
+// -----------------------------------------------------------------------------------------
+
+pub const DynamicReactor = struct {
+    allocator: std.mem.Allocator,
+    best_bid_price: f64,
+    best_ask_price: f64,
+    best_bid_qty: f64,
+    best_ask_qty: f64,
+    last_seq: u64,
+    next_order_id: u64,
+    processed_ticks: u64,
+    generated_signals: u64,
+    overrun_count: std.atomic.Value(u64) align(64),
+
+    risk_ring: ?*DynamicSpscRing(root.OrderSignal64) align(64),
+    audit_ring: ?*DynamicSpscRing(root.OrderSignal64),
+    telemetry_ring: ?*DynamicSpscRing(root.OrderSignal64),
+
+    pub fn init(allocator: std.mem.Allocator) !*DynamicReactor {
+        const self = try allocator.create(DynamicReactor);
+        self.* = .{
+            .allocator = allocator,
+            .best_bid_price = 0,
+            .best_ask_price = 0,
+            .best_bid_qty = 0,
+            .best_ask_qty = 0,
+            .last_seq = 0,
+            .next_order_id = 1,
+            .processed_ticks = 0,
+            .generated_signals = 0,
+            .overrun_count = std.atomic.Value(u64).init(0),
+            .risk_ring = null,
+            .audit_ring = null,
+            .telemetry_ring = null,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *DynamicReactor) void {
+        self.allocator.destroy(self);
+    }
+
+    pub inline fn processTick(self: *DynamicReactor, update: root.BookUpdate64, out_signal: *root.OrderSignal64) bool {
+        self.processed_ticks += 1;
+        self.best_bid_price = update.bid_price;
+        self.best_ask_price = update.ask_price;
+        self.best_bid_qty = update.bid_qty;
+        self.best_ask_qty = update.ask_qty;
+        self.last_seq = update.seq;
+
+        if (update.ask_price > update.bid_price and update.bid_price > 0) {
+            const sig = root.OrderSignal64{
+                .timestamp_ns = root.nowNs(),
+                .ingress_ts_ns = update.timestamp_ns,
+                .order_id = self.next_order_id,
+                .price = update.bid_price,
+                .qty = update.bid_qty,
+                .symbol_id = update.symbol_id,
+                .side = 0, // Buy
+                .action = 1, // New
+                .flags = 0x02, // PostOnly
+                ._reserved = [_]u8{0} ** 8,
+            };
+            self.next_order_id +%= 1;
+            self.generated_signals += 1;
+
+            out_signal.* = sig;
+            self.fanOutNonBlocking(sig);
+            return true;
+        }
+        return false;
+    }
+
+    inline fn fanOutNonBlocking(self: *DynamicReactor, signal: root.OrderSignal64) void {
+        if (self.risk_ring) |r| {
+            if (r.claim()) |slot| {
+                slot.* = signal;
+                r.commit();
+            } else {
+                _ = self.overrun_count.fetchAdd(1, .monotonic);
+            }
+        }
+        if (self.audit_ring) |r| {
+            if (r.claim()) |slot| {
+                slot.* = signal;
+                r.commit();
+            } else {
+                _ = self.overrun_count.fetchAdd(1, .monotonic);
+            }
+        }
+        if (self.telemetry_ring) |r| {
+            if (r.claim()) |slot| {
+                slot.* = signal;
+                r.commit();
+            } else {
+                _ = self.overrun_count.fetchAdd(1, .monotonic);
+            }
+        }
+    }
+};
+
+pub const DynamicOffPath = struct {
+    allocator: std.mem.Allocator,
+    risk_ring: DynamicSpscRing(root.OrderSignal64),
+    audit_ring: DynamicSpscRing(root.OrderSignal64),
+    telemetry_ring: DynamicSpscRing(root.OrderSignal64),
+
+    running: std.atomic.Value(bool) align(64),
+    risk_processed: std.atomic.Value(u64) align(64),
+    audit_processed: std.atomic.Value(u64) align(64),
+    telemetry_processed: std.atomic.Value(u64) align(64),
+    total_latency_ns: std.atomic.Value(u64) align(64),
+
+    risk_thread: ?std.Thread = null,
+    audit_thread: ?std.Thread = null,
+    telemetry_thread: ?std.Thread = null,
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !*DynamicOffPath {
+        if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return error.InvalidCapacity;
+        const self = try allocator.create(DynamicOffPath);
+        errdefer allocator.destroy(self);
+
+        var risk_ring = try DynamicSpscRing(root.OrderSignal64).init(allocator, capacity);
+        errdefer risk_ring.deinit();
+
+        var audit_ring = try DynamicSpscRing(root.OrderSignal64).init(allocator, capacity);
+        errdefer audit_ring.deinit();
+
+        var telemetry_ring = try DynamicSpscRing(root.OrderSignal64).init(allocator, capacity);
+        errdefer telemetry_ring.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .risk_ring = risk_ring,
+            .audit_ring = audit_ring,
+            .telemetry_ring = telemetry_ring,
+            .running = std.atomic.Value(bool).init(false),
+            .risk_processed = std.atomic.Value(u64).init(0),
+            .audit_processed = std.atomic.Value(u64).init(0),
+            .telemetry_processed = std.atomic.Value(u64).init(0),
+            .total_latency_ns = std.atomic.Value(u64).init(0),
+            .risk_thread = null,
+            .audit_thread = null,
+            .telemetry_thread = null,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *DynamicOffPath) void {
+        self.stop();
+        self.telemetry_ring.deinit();
+        self.audit_ring.deinit();
+        self.risk_ring.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn start(self: *DynamicOffPath) !void {
+        if (self.running.swap(true, .acq_rel)) return;
+        errdefer self.stop();
+
+        self.risk_thread = try std.Thread.spawn(.{}, riskWorkerLoop, .{self});
+        self.audit_thread = try std.Thread.spawn(.{}, auditWorkerLoop, .{self});
+        self.telemetry_thread = try std.Thread.spawn(.{}, telemetryWorkerLoop, .{self});
+    }
+
+    pub fn stop(self: *DynamicOffPath) void {
+        if (!self.running.swap(false, .acq_rel)) return;
+
+        if (self.risk_thread) |t| {
+            t.join();
+            self.risk_thread = null;
+        }
+        if (self.audit_thread) |t| {
+            t.join();
+            self.audit_thread = null;
+        }
+        if (self.telemetry_thread) |t| {
+            t.join();
+            self.telemetry_thread = null;
+        }
+    }
+
+    fn riskWorkerLoop(self: *DynamicOffPath) void {
+        root.pinToPerformanceCores();
+        var position: f64 = 0;
+        var notional: f64 = 0;
+        _ = &position;
+        _ = &notional;
+
+        while (self.running.load(.acquire)) {
+            var batch_count: u64 = 0;
+            while (self.risk_ring.popValue()) |sig| {
+                batch_count += 1;
+                if (sig.side == 0) {
+                    position += sig.qty;
+                } else {
+                    position -= sig.qty;
+                }
+                notional += sig.price * sig.qty;
+            }
+            if (batch_count > 0) {
+                _ = self.risk_processed.fetchAdd(batch_count, .monotonic);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        var exit_count: u64 = 0;
+        while (self.risk_ring.popValue()) |_| {
+            exit_count += 1;
+        }
+        if (exit_count > 0) {
+            _ = self.risk_processed.fetchAdd(exit_count, .monotonic);
+        }
+    }
+
+    fn auditWorkerLoop(self: *DynamicOffPath) void {
+        root.pinToPerformanceCores();
+        var checksum: u64 = 0;
+        _ = &checksum;
+
+        while (self.running.load(.acquire)) {
+            var batch_count: u64 = 0;
+            while (self.audit_ring.popValue()) |sig| {
+                batch_count += 1;
+                checksum +%= sig.order_id ^ sig.timestamp_ns;
+            }
+            if (batch_count > 0) {
+                _ = self.audit_processed.fetchAdd(batch_count, .monotonic);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        var exit_count: u64 = 0;
+        while (self.audit_ring.popValue()) |_| {
+            exit_count += 1;
+        }
+        if (exit_count > 0) {
+            _ = self.audit_processed.fetchAdd(exit_count, .monotonic);
+        }
+    }
+
+    fn telemetryWorkerLoop(self: *DynamicOffPath) void {
+        root.pinToPerformanceCores();
+        while (self.running.load(.acquire)) {
+            var batch_count: u64 = 0;
+            var batch_lat: u64 = 0;
+            while (self.telemetry_ring.popValue()) |sig| {
+                batch_count += 1;
+                if (sig.timestamp_ns >= sig.ingress_ts_ns) {
+                    batch_lat += (sig.timestamp_ns - sig.ingress_ts_ns);
+                }
+            }
+            if (batch_count > 0) {
+                if (batch_lat > 0) {
+                    _ = self.total_latency_ns.fetchAdd(batch_lat, .monotonic);
+                }
+                _ = self.telemetry_processed.fetchAdd(batch_count, .monotonic);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        var exit_count: u64 = 0;
+        while (self.telemetry_ring.popValue()) |_| {
+            exit_count += 1;
+        }
+        if (exit_count > 0) {
+            _ = self.telemetry_processed.fetchAdd(exit_count, .monotonic);
+        }
+    }
+};
+
+pub export fn awp_zig_reactor_create(out_reactor: ?*?*anyopaque) callconv(.c) c_int {
+    if (out_reactor == null) return -22;
+    const reactor = DynamicReactor.init(std.heap.c_allocator) catch return -12;
+    out_reactor.?.* = @ptrCast(reactor);
+    return 0;
+}
+
+pub export fn awp_zig_reactor_destroy(reactor_ptr: ?*anyopaque) callconv(.c) void {
+    if (reactor_ptr) |ptr| {
+        const reactor: *DynamicReactor = @ptrCast(@alignCast(ptr));
+        reactor.deinit();
+    }
+}
+
+pub export fn awp_zig_reactor_process_tick(reactor_ptr: ?*anyopaque, update: ?*const root.BookUpdate64, out_signal: ?*root.OrderSignal64) callconv(.c) c_int {
+    if (reactor_ptr == null or update == null or out_signal == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    if (reactor.processTick(update.?.*, out_signal.?)) {
+        return 0; // Signal generated
+    }
+    return 1; // Evaluated cleanly, no signal generated
+}
+
+pub export fn awp_zig_reactor_bind_risk_ring(reactor_ptr: ?*anyopaque, ring_ptr: ?*anyopaque) callconv(.c) c_int {
+    if (reactor_ptr == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    if (ring_ptr) |ptr| {
+        reactor.risk_ring = @ptrCast(@alignCast(ptr));
+    } else {
+        reactor.risk_ring = null;
+    }
+    return 0;
+}
+
+pub export fn awp_zig_reactor_bind_audit_ring(reactor_ptr: ?*anyopaque, ring_ptr: ?*anyopaque) callconv(.c) c_int {
+    if (reactor_ptr == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    if (ring_ptr) |ptr| {
+        reactor.audit_ring = @ptrCast(@alignCast(ptr));
+    } else {
+        reactor.audit_ring = null;
+    }
+    return 0;
+}
+
+pub export fn awp_zig_reactor_bind_telemetry_ring(reactor_ptr: ?*anyopaque, ring_ptr: ?*anyopaque) callconv(.c) c_int {
+    if (reactor_ptr == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    if (ring_ptr) |ptr| {
+        reactor.telemetry_ring = @ptrCast(@alignCast(ptr));
+    } else {
+        reactor.telemetry_ring = null;
+    }
+    return 0;
+}
+
+pub export fn awp_zig_reactor_get_overruns(reactor_ptr: ?*anyopaque) callconv(.c) u64 {
+    if (reactor_ptr == null) return 0;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    return reactor.overrun_count.load(.acquire);
+}
+
+pub export fn awp_zig_offpath_create(capacity: usize, out_offpath: ?*?*anyopaque) callconv(.c) c_int {
+    if (out_offpath == null) return -22;
+    if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return -22;
+    const offpath = DynamicOffPath.init(std.heap.c_allocator, capacity) catch return -12;
+    out_offpath.?.* = @ptrCast(offpath);
+    return 0;
+}
+
+pub export fn awp_zig_offpath_start(offpath_ptr: ?*anyopaque) callconv(.c) c_int {
+    if (offpath_ptr == null) return -22;
+    const offpath: *DynamicOffPath = @ptrCast(@alignCast(offpath_ptr.?));
+    offpath.start() catch return -12;
+    return 0;
+}
+
+pub export fn awp_zig_offpath_stop(offpath_ptr: ?*anyopaque) callconv(.c) void {
+    if (offpath_ptr) |ptr| {
+        const offpath: *DynamicOffPath = @ptrCast(@alignCast(ptr));
+        offpath.stop();
+    }
+}
+
+pub export fn awp_zig_offpath_destroy(offpath_ptr: ?*anyopaque) callconv(.c) void {
+    if (offpath_ptr) |ptr| {
+        const offpath: *DynamicOffPath = @ptrCast(@alignCast(ptr));
+        offpath.deinit();
+    }
+}
+
+pub export fn awp_zig_offpath_get_risk_ring(offpath_ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
+    if (offpath_ptr == null) return null;
+    const offpath: *DynamicOffPath = @ptrCast(@alignCast(offpath_ptr.?));
+    return @ptrCast(&offpath.risk_ring);
+}
+
+pub export fn awp_zig_offpath_get_audit_ring(offpath_ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
+    if (offpath_ptr == null) return null;
+    const offpath: *DynamicOffPath = @ptrCast(@alignCast(offpath_ptr.?));
+    return @ptrCast(&offpath.audit_ring);
+}
+
+pub export fn awp_zig_offpath_get_telemetry_ring(offpath_ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
+    if (offpath_ptr == null) return null;
+    const offpath: *DynamicOffPath = @ptrCast(@alignCast(offpath_ptr.?));
+    return @ptrCast(&offpath.telemetry_ring);
+}
+
+pub export fn awp_zig_offpath_get_processed(
+    offpath_ptr: ?*anyopaque,
+    out_risk: ?*u64,
+    out_audit: ?*u64,
+    out_telemetry: ?*u64,
+) callconv(.c) void {
+    if (offpath_ptr == null) return;
+    const offpath: *DynamicOffPath = @ptrCast(@alignCast(offpath_ptr.?));
+    if (out_risk) |p| p.* = offpath.risk_processed.load(.acquire);
+    if (out_audit) |p| p.* = offpath.audit_processed.load(.acquire);
+    if (out_telemetry) |p| p.* = offpath.telemetry_processed.load(.acquire);
 }

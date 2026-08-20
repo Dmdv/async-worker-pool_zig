@@ -49,6 +49,22 @@ pub struct Trade64 {
     pub _reserved: [u8; 16],
 }
 
+/// 64-Byte Cache-Line Aligned Financial Order Execution Signal (Zero-Copy POD)
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrderSignal64 {
+    pub timestamp_ns: u64,
+    pub ingress_ts_ns: u64,
+    pub order_id: u64,
+    pub price: f64,
+    pub qty: f64,
+    pub symbol_id: u32,
+    pub side: u32,
+    pub action: u32,
+    pub flags: u32,
+    pub _reserved: [u8; 8],
+}
+
 #[repr(C)]
 pub struct AwpClaim {
     pub frame: *mut AwpFrame,
@@ -120,6 +136,32 @@ extern "C" {
         out_desc: *mut PacketDescriptor,
     ) -> c_int;
     pub fn awp_zig_bipring_release(ring: *mut c_void, desc: *const PacketDescriptor);
+
+    pub fn awp_zig_reactor_create(out_reactor: *mut *mut c_void) -> c_int;
+    pub fn awp_zig_reactor_destroy(reactor: *mut c_void);
+    pub fn awp_zig_reactor_process_tick(
+        reactor: *mut c_void,
+        update: *const BookUpdate64,
+        out_signal: *mut OrderSignal64,
+    ) -> c_int;
+    pub fn awp_zig_reactor_bind_risk_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
+    pub fn awp_zig_reactor_bind_audit_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
+    pub fn awp_zig_reactor_bind_telemetry_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
+    pub fn awp_zig_reactor_get_overruns(reactor: *mut c_void) -> u64;
+
+    pub fn awp_zig_offpath_create(capacity: usize, out_offpath: *mut *mut c_void) -> c_int;
+    pub fn awp_zig_offpath_start(offpath: *mut c_void) -> c_int;
+    pub fn awp_zig_offpath_stop(offpath: *mut c_void);
+    pub fn awp_zig_offpath_destroy(offpath: *mut c_void);
+    pub fn awp_zig_offpath_get_risk_ring(offpath: *mut c_void) -> *mut c_void;
+    pub fn awp_zig_offpath_get_audit_ring(offpath: *mut c_void) -> *mut c_void;
+    pub fn awp_zig_offpath_get_telemetry_ring(offpath: *mut c_void) -> *mut c_void;
+    pub fn awp_zig_offpath_get_processed(
+        offpath: *mut c_void,
+        out_risk: *mut u64,
+        out_audit: *mut u64,
+        out_telemetry: *mut u64,
+    );
 }
 
 const _: () = {
@@ -127,6 +169,19 @@ const _: () = {
     assert!(std::mem::align_of::<BookUpdate64>() == 64);
     assert!(std::mem::size_of::<Trade64>() == 64);
     assert!(std::mem::align_of::<Trade64>() == 64);
+    assert!(std::mem::size_of::<OrderSignal64>() == 64);
+    assert!(std::mem::align_of::<OrderSignal64>() == 64);
     assert!(std::mem::size_of::<PacketDescriptor>() == 16);
     assert!(std::mem::align_of::<PacketDescriptor>() == 8);
+
+    assert!(core::mem::offset_of!(OrderSignal64, timestamp_ns) == 0);
+    assert!(core::mem::offset_of!(OrderSignal64, ingress_ts_ns) == 8);
+    assert!(core::mem::offset_of!(OrderSignal64, order_id) == 16);
+    assert!(core::mem::offset_of!(OrderSignal64, price) == 24);
+    assert!(core::mem::offset_of!(OrderSignal64, qty) == 32);
+    assert!(core::mem::offset_of!(OrderSignal64, symbol_id) == 40);
+    assert!(core::mem::offset_of!(OrderSignal64, side) == 44);
+    assert!(core::mem::offset_of!(OrderSignal64, action) == 48);
+    assert!(core::mem::offset_of!(OrderSignal64, flags) == 52);
+    assert!(core::mem::offset_of!(OrderSignal64, _reserved) == 56);
 };

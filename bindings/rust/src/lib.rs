@@ -12,8 +12,8 @@ pub mod sys;
 
 pub use error::AwpError;
 pub use sys::{
-    AwpClaim, AwpFrame, BookUpdate64, PacketDescriptor, Trade64, AWP_FEED_MAX, AWP_FLAG_DROPPED,
-    AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX,
+    AwpClaim, AwpFrame, BookUpdate64, OrderSignal64, PacketDescriptor, Trade64, AWP_FEED_MAX,
+    AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX,
 };
 
 use std::os::raw::{c_int, c_void};
@@ -500,6 +500,150 @@ impl Drop for BipRing {
         if !self.handle.is_null() {
             unsafe {
                 sys::awp_zig_bipring_destroy(self.handle);
+            }
+            self.handle = ptr::null_mut();
+        }
+    }
+}
+
+/// High-performance Single-Threaded Trading Reactor (Critical Fast-Path)
+pub struct TradingReactor<'a> {
+    handle: *mut c_void,
+    _marker: std::marker::PhantomData<&'a OffPathPipeline>,
+}
+
+unsafe impl<'a> Send for TradingReactor<'a> {}
+
+impl<'a> TradingReactor<'a> {
+    /// Create a new Trading Reactor core
+    pub fn new() -> Result<Self, AwpError> {
+        let mut handle = ptr::null_mut();
+        let rc = unsafe { sys::awp_zig_reactor_create(&mut handle) };
+        if rc == 0 {
+            Ok(Self {
+                handle,
+                _marker: std::marker::PhantomData,
+            })
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Process incoming 64-byte top-of-book market update on the Fast-Path Core.
+    /// Returns Some(OrderSignal64) if a signal was generated.
+    pub fn process_tick(&mut self, update: &BookUpdate64) -> Option<OrderSignal64> {
+        let mut signal: OrderSignal64 = unsafe { std::mem::zeroed() };
+        let rc = unsafe { sys::awp_zig_reactor_process_tick(self.handle, update, &mut signal) };
+        if rc == 0 {
+            Some(signal)
+        } else {
+            None
+        }
+    }
+
+    /// Bind to an OffPathPipeline's worker rings for zero-mutex fan-out.
+    pub fn bind_offpath(&mut self, offpath: &'a OffPathPipeline) {
+        unsafe {
+            let risk_ring = sys::awp_zig_offpath_get_risk_ring(offpath.handle);
+            let audit_ring = sys::awp_zig_offpath_get_audit_ring(offpath.handle);
+            let telem_ring = sys::awp_zig_offpath_get_telemetry_ring(offpath.handle);
+            sys::awp_zig_reactor_bind_risk_ring(self.handle, risk_ring);
+            sys::awp_zig_reactor_bind_audit_ring(self.handle, audit_ring);
+            sys::awp_zig_reactor_bind_telemetry_ring(self.handle, telem_ring);
+        }
+    }
+
+    /// Unbind offpath rings to clear references.
+    pub fn unbind_offpath(&mut self) {
+        unsafe {
+            sys::awp_zig_reactor_bind_risk_ring(self.handle, ptr::null_mut());
+            sys::awp_zig_reactor_bind_audit_ring(self.handle, ptr::null_mut());
+            sys::awp_zig_reactor_bind_telemetry_ring(self.handle, ptr::null_mut());
+        }
+    }
+
+    /// Get count of off-path ring overruns (signals dropped due to slow off-path workers).
+    pub fn overruns(&self) -> u64 {
+        unsafe { sys::awp_zig_reactor_get_overruns(self.handle) }
+    }
+}
+
+impl<'a> Drop for TradingReactor<'a> {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                sys::awp_zig_reactor_destroy(self.handle);
+            }
+            self.handle = ptr::null_mut();
+        }
+    }
+}
+
+/// Statistics for Asynchronous Off-Path Workers
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OffPathStats {
+    pub risk_processed: u64,
+    pub audit_processed: u64,
+    pub telemetry_processed: u64,
+}
+
+/// Asynchronous Off-Path Worker Pipeline
+pub struct OffPathPipeline {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for OffPathPipeline {}
+
+impl OffPathPipeline {
+    /// Create a new OffPathPipeline with specified queue capacity for risk, audit, and telemetry queues.
+    pub fn new(capacity: usize) -> Result<Self, AwpError> {
+        let mut handle = ptr::null_mut();
+        let rc = unsafe { sys::awp_zig_offpath_create(capacity, &mut handle) };
+        if rc == 0 {
+            Ok(Self { handle })
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Start background worker threads for Risk, Audit Logging, and Telemetry.
+    pub fn start(&mut self) -> Result<(), AwpError> {
+        let rc = unsafe { sys::awp_zig_offpath_start(self.handle) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Stop background worker threads.
+    pub fn stop(&mut self) {
+        unsafe {
+            sys::awp_zig_offpath_stop(self.handle);
+        }
+    }
+
+    /// Get counts of processed signals across worker threads.
+    pub fn stats(&self) -> OffPathStats {
+        let mut risk = 0;
+        let mut audit = 0;
+        let mut telemetry = 0;
+        unsafe {
+            sys::awp_zig_offpath_get_processed(self.handle, &mut risk, &mut audit, &mut telemetry);
+        }
+        OffPathStats {
+            risk_processed: risk,
+            audit_processed: audit,
+            telemetry_processed: telemetry,
+        }
+    }
+}
+
+impl Drop for OffPathPipeline {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                sys::awp_zig_offpath_destroy(self.handle);
             }
             self.handle = ptr::null_mut();
         }
