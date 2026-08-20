@@ -637,6 +637,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
         write_a: std.atomic.Value(usize) align(64),
         write_b: std.atomic.Value(usize),
         is_b_active: std.atomic.Value(bool),
+        reserved_size: usize,
         cached_read_a: usize,
 
         // Consumer State (Exclusively written by Consumer - Cacheline 1)
@@ -653,6 +654,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 .write_a = std.atomic.Value(usize).init(0),
                 .write_b = std.atomic.Value(usize).init(0),
                 .is_b_active = std.atomic.Value(bool).init(false),
+                .reserved_size = 0,
                 .cached_read_a = 0,
                 .read_a = std.atomic.Value(usize).init(0),
                 .is_reading_b = std.atomic.Value(bool).init(false),
@@ -670,6 +672,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 .write_a = std.atomic.Value(usize).init(0),
                 .write_b = std.atomic.Value(usize).init(0),
                 .is_b_active = std.atomic.Value(bool).init(false),
+                .reserved_size = 0,
                 .cached_read_a = 0,
                 .read_a = std.atomic.Value(usize).init(0),
                 .is_reading_b = std.atomic.Value(bool).init(false),
@@ -692,6 +695,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 const wa = self.write_a.load(.monotonic);
                 // Fast Path: Fits at the tail of Region A
                 if (capacity - wa >= size) {
+                    self.reserved_size = size;
                     return self.buffer[wa .. wa + size];
                 }
 
@@ -701,6 +705,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 if (ra > size) {
                     self.write_b.store(0, .monotonic);
                     self.is_b_active.store(true, .release);
+                    self.reserved_size = size;
                     return self.buffer[0..size];
                 }
 
@@ -716,6 +721,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
 
                     // Retry in Region A
                     if (capacity - wb >= size) {
+                        self.reserved_size = size;
                         return self.buffer[wb .. wb + size];
                     }
                     return null;
@@ -726,6 +732,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 self.cached_read_a = ra;
 
                 if (ra > wb and ra - wb > size) {
+                    self.reserved_size = size;
                     return self.buffer[wb .. wb + size];
                 }
 
@@ -734,7 +741,9 @@ pub fn BipBuffer(comptime capacity: usize) type {
         }
 
         /// Commit the previously reserved bytes, publishing them to consumer.
-        pub inline fn commit(self: *Self, size: usize) void {
+        pub inline fn commit(self: *Self, size: usize) bool {
+            if (size == 0 or size > self.reserved_size) return false;
+            self.reserved_size = 0;
             if (!self.is_b_active.load(.monotonic)) {
                 const wa = self.write_a.load(.monotonic);
                 self.write_a.store(wa + size, .release);
@@ -742,14 +751,14 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 const wb = self.write_b.load(.monotonic);
                 self.write_b.store(wb + size, .release);
             }
+            return true;
         }
 
         /// Push contiguous data into BipBuffer (convenience copy wrapper)
         pub inline fn push(self: *Self, data: []const u8) bool {
             const slice = self.reserve(data.len) orelse return false;
             @memcpy(slice, data);
-            self.commit(data.len);
-            return true;
+            return self.commit(data.len);
         }
 
         /// Zero-Copy Peek: Returns current contiguous readable slice, or null if empty.
@@ -789,35 +798,42 @@ pub fn BipBuffer(comptime capacity: usize) type {
             }
         }
 
-        /// Mark `size` bytes as consumed by the reader.
-        pub inline fn consume(self: *Self, size: usize) void {
-            const ra = self.read_a.load(.monotonic);
-            const new_ra = ra + size;
-
+        /// Mark `size` bytes as consumed by the reader. Clamped to readable length.
+        pub inline fn consume(self: *Self, size: usize) bool {
+            if (size == 0) return false;
             if (!self.is_reading_b.load(.monotonic)) {
-                const wa = self.write_a.load(.monotonic);
+                const ra = self.read_a.load(.monotonic);
+                const wa = self.write_a.load(.acquire);
+                if (ra >= wa) return false;
+                const available = wa - ra;
+                const to_consume = @min(size, available);
+                const new_ra = ra + to_consume;
                 if (new_ra >= wa) {
                     if (self.is_b_active.load(.acquire)) {
                         self.read_a.store(0, .release);
                         self.is_reading_b.store(true, .release);
-                        return;
+                        return true;
                     }
                     self.read_a.store(wa, .release);
                 } else {
                     self.read_a.store(new_ra, .release);
                 }
+                return true;
             } else {
+                const ra = self.read_a.load(.monotonic);
                 if (self.is_b_active.load(.acquire)) {
-                    const wb = self.write_b.load(.monotonic);
-                    if (new_ra >= wb) {
-                        self.read_a.store(wb, .release);
-                    } else {
-                        self.read_a.store(new_ra, .release);
-                    }
+                    const wb = self.write_b.load(.acquire);
+                    if (ra >= wb) return false;
+                    const to_consume = @min(size, wb - ra);
+                    self.read_a.store(ra + to_consume, .release);
+                    return true;
                 } else {
-                    // Promoted
                     self.is_reading_b.store(false, .release);
-                    self.read_a.store(new_ra, .release);
+                    const wa = self.write_a.load(.acquire);
+                    if (ra >= wa) return false;
+                    const to_consume = @min(size, wa - ra);
+                    self.read_a.store(ra + to_consume, .release);
+                    return true;
                 }
             }
         }
@@ -1098,14 +1114,17 @@ test "BipBuffer sequential reserve commit and peek consume" {
     const res = bip.reserve(100);
     try std.testing.expect(res != null);
     @memset(res.?, 0x42);
-    bip.commit(100);
+    // Invalid over-commit
+    try std.testing.expect(!bip.commit(101));
+    // Valid commit
+    try std.testing.expect(bip.commit(100));
 
     // 2. Peek & Consume
     const peeked = bip.peek();
     try std.testing.expect(peeked != null);
     try std.testing.expectEqual(@as(usize, 100), peeked.?.len);
     try std.testing.expectEqual(@as(u8, 0x42), peeked.?[0]);
-    bip.consume(100);
+    try std.testing.expect(bip.consume(100));
 
     try std.testing.expect(bip.peek() == null);
 }
@@ -1120,26 +1139,26 @@ test "BipBuffer bipartite wrapping Region A to Region B" {
     // Consume 150 bytes (read_a moves to 150, 50 bytes left in A)
     const p1 = bip.peek();
     try std.testing.expect(p1 != null and p1.?.len == 200);
-    bip.consume(150);
+    try std.testing.expect(bip.consume(150));
 
     // Now capacity - write_a = 256 - 200 = 56 bytes.
     // Try to reserve 100 bytes (cannot fit in remaining 56B of A, wraps to B because read_a=150 > 100)
     const res_b = bip.reserve(100);
     try std.testing.expect(res_b != null);
     @memset(res_b.?, 'B');
-    bip.commit(100);
+    try std.testing.expect(bip.commit(100));
 
     // Reader finishes remaining 50 bytes of A
     const p_rem_a = bip.peek();
     try std.testing.expect(p_rem_a != null and p_rem_a.?.len == 50);
     try std.testing.expectEqual(@as(u8, 'A'), p_rem_a.?[0]);
-    bip.consume(50);
+    try std.testing.expect(bip.consume(50));
 
     // Reader now sees Region B (100 bytes of 'B')
     const p_b = bip.peek();
     try std.testing.expect(p_b != null and p_b.?.len == 100);
     try std.testing.expectEqual(@as(u8, 'B'), p_b.?[0]);
-    bip.consume(100);
+    try std.testing.expect(bip.consume(100));
 
     try std.testing.expect(bip.peek() == null);
 }
@@ -1160,13 +1179,13 @@ test "BipBuffer HugePage Slab backing" {
     const res = bip.reserve(desc.len);
     try std.testing.expect(res != null);
     @memset(res.?, 0xEE);
-    bip.commit(desc.len);
+    try std.testing.expect(bip.commit(desc.len));
 
     const peeked = bip.peek();
     try std.testing.expect(peeked != null);
     try std.testing.expectEqual(@as(usize, 1500), peeked.?.len);
     try std.testing.expectEqual(@as(u8, 0xEE), peeked.?[0]);
-    bip.consume(desc.len);
+    try std.testing.expect(bip.consume(desc.len));
 }
 
 test "BipRing variable-length packet streaming" {

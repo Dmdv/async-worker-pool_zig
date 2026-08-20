@@ -348,16 +348,20 @@ impl BipBuffer {
     ///
     /// # Safety
     /// Caller must ensure `size` does not exceed the length of the slice returned by the last successful `reserve()`.
-    pub unsafe fn commit(&mut self, size: usize) {
-        sys::awp_zig_bip_commit(self.handle, size);
+    pub unsafe fn commit(&mut self, size: usize) -> Result<(), AwpError> {
+        let rc = sys::awp_zig_bip_commit(self.handle, size);
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(AwpError::from(rc))
+        }
     }
 
     /// Push contiguous data into BipBuffer (convenience copy wrapper).
     pub fn push(&mut self, data: &[u8]) -> bool {
         if let Some(buf) = self.reserve(data.len()) {
             buf.copy_from_slice(data);
-            unsafe { self.commit(data.len()) };
-            true
+            unsafe { self.commit(data.len()).is_ok() }
         } else {
             false
         }
@@ -379,8 +383,13 @@ impl BipBuffer {
     ///
     /// # Safety
     /// Caller must ensure `size` does not exceed the length of the slice returned by the last successful `peek()`.
-    pub unsafe fn consume(&mut self, size: usize) {
-        sys::awp_zig_bip_consume(self.handle, size);
+    pub unsafe fn consume(&mut self, size: usize) -> Result<(), AwpError> {
+        let rc = sys::awp_zig_bip_consume(self.handle, size);
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(AwpError::from(rc))
+        }
     }
 }
 

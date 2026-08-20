@@ -328,6 +328,7 @@ pub const DynamicBip = struct {
     read_a: std.atomic.Value(usize) align(64),
     is_reading_b: std.atomic.Value(bool),
     capacity: usize,
+    reserved_size: usize,
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !*DynamicBip {
         if (!std.math.isPowerOfTwo(capacity) or capacity < 64) return error.InvalidCapacity;
@@ -347,6 +348,7 @@ pub const DynamicBip = struct {
             .read_a = std.atomic.Value(usize).init(0),
             .is_reading_b = std.atomic.Value(bool).init(false),
             .capacity = capacity,
+            .reserved_size = 0,
         };
         return self;
     }
@@ -362,6 +364,7 @@ pub const DynamicBip = struct {
         if (!self.is_b_active.load(.monotonic)) {
             const wa = self.write_a.load(.monotonic);
             if (self.capacity - wa >= size) {
+                self.reserved_size = size;
                 return self.buffer[wa .. wa + size];
             }
 
@@ -370,6 +373,7 @@ pub const DynamicBip = struct {
             if (ra > size) {
                 self.write_b.store(0, .monotonic);
                 self.is_b_active.store(true, .release);
+                self.reserved_size = size;
                 return self.buffer[0..size];
             }
             return null;
@@ -380,6 +384,7 @@ pub const DynamicBip = struct {
                 self.is_b_active.store(false, .release);
 
                 if (self.capacity - wb >= size) {
+                    self.reserved_size = size;
                     return self.buffer[wb .. wb + size];
                 }
                 return null;
@@ -389,13 +394,16 @@ pub const DynamicBip = struct {
             const ra = self.read_a.load(.acquire);
             self.cached_read_a = ra;
             if (ra > wb and ra - wb > size) {
+                self.reserved_size = size;
                 return self.buffer[wb .. wb + size];
             }
             return null;
         }
     }
 
-    pub inline fn commit(self: *DynamicBip, size: usize) void {
+    pub inline fn commit(self: *DynamicBip, size: usize) bool {
+        if (size == 0 or size > self.reserved_size) return false;
+        self.reserved_size = 0;
         if (!self.is_b_active.load(.monotonic)) {
             const wa = self.write_a.load(.monotonic);
             self.write_a.store(wa + size, .release);
@@ -403,6 +411,7 @@ pub const DynamicBip = struct {
             const wb = self.write_b.load(.monotonic);
             self.write_b.store(wb + size, .release);
         }
+        return true;
     }
 
     pub inline fn peek(self: *DynamicBip) ?[]const u8 {
@@ -438,33 +447,41 @@ pub const DynamicBip = struct {
         }
     }
 
-    pub inline fn consume(self: *DynamicBip, size: usize) void {
-        const ra = self.read_a.load(.monotonic);
-        const new_ra = ra + size;
-
+    pub inline fn consume(self: *DynamicBip, size: usize) bool {
+        if (size == 0) return false;
         if (!self.is_reading_b.load(.monotonic)) {
-            const wa = self.write_a.load(.monotonic);
+            const ra = self.read_a.load(.monotonic);
+            const wa = self.write_a.load(.acquire);
+            if (ra >= wa) return false;
+            const available = wa - ra;
+            const to_consume = @min(size, available);
+            const new_ra = ra + to_consume;
             if (new_ra >= wa) {
                 if (self.is_b_active.load(.acquire)) {
                     self.read_a.store(0, .release);
                     self.is_reading_b.store(true, .release);
-                    return;
+                    return true;
                 }
                 self.read_a.store(wa, .release);
             } else {
                 self.read_a.store(new_ra, .release);
             }
+            return true;
         } else {
+            const ra = self.read_a.load(.monotonic);
             if (self.is_b_active.load(.acquire)) {
-                const wb = self.write_b.load(.monotonic);
-                if (new_ra >= wb) {
-                    self.read_a.store(wb, .release);
-                } else {
-                    self.read_a.store(new_ra, .release);
-                }
+                const wb = self.write_b.load(.acquire);
+                if (ra >= wb) return false;
+                const to_consume = @min(size, wb - ra);
+                self.read_a.store(ra + to_consume, .release);
+                return true;
             } else {
                 self.is_reading_b.store(false, .release);
-                self.read_a.store(new_ra, .release);
+                const wa = self.write_a.load(.acquire);
+                if (ra >= wa) return false;
+                const to_consume = @min(size, wa - ra);
+                self.read_a.store(ra + to_consume, .release);
+                return true;
             }
         }
     }
@@ -494,11 +511,13 @@ pub export fn awp_zig_bip_reserve(bip_ptr: ?*anyopaque, size: usize, out_ptr: *[
     return -11; // EAGAIN / Full
 }
 
-pub export fn awp_zig_bip_commit(bip_ptr: ?*anyopaque, size: usize) callconv(.c) void {
-    if (bip_ptr) |ptr| {
-        const bip: *DynamicBip = @ptrCast(@alignCast(ptr));
-        bip.commit(size);
+pub export fn awp_zig_bip_commit(bip_ptr: ?*anyopaque, size: usize) callconv(.c) c_int {
+    if (bip_ptr == null or size == 0) return -22;
+    const bip: *DynamicBip = @ptrCast(@alignCast(bip_ptr.?));
+    if (bip.commit(size)) {
+        return 0;
     }
+    return -22; // EINVAL: oversized or unreserved commit
 }
 
 pub export fn awp_zig_bip_peek(bip_ptr: ?*anyopaque, out_ptr: *[*]const u8, out_len: *usize) callconv(.c) c_int {
@@ -512,11 +531,13 @@ pub export fn awp_zig_bip_peek(bip_ptr: ?*anyopaque, out_ptr: *[*]const u8, out_
     return -11; // EAGAIN / Empty
 }
 
-pub export fn awp_zig_bip_consume(bip_ptr: ?*anyopaque, size: usize) callconv(.c) void {
-    if (bip_ptr) |ptr| {
-        const bip: *DynamicBip = @ptrCast(@alignCast(ptr));
-        bip.consume(size);
+pub export fn awp_zig_bip_consume(bip_ptr: ?*anyopaque, size: usize) callconv(.c) c_int {
+    if (bip_ptr == null or size == 0) return -22;
+    const bip: *DynamicBip = @ptrCast(@alignCast(bip_ptr.?));
+    if (bip.consume(size)) {
+        return 0;
     }
+    return -22; // EINVAL: empty or invalid consume
 }
 
 pub fn DynamicSpscRing(comptime T: type) type {

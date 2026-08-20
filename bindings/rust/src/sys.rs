@@ -93,13 +93,13 @@ extern "C" {
     pub fn awp_zig_bip_create(capacity: usize, out_bip: *mut *mut c_void) -> c_int;
     pub fn awp_zig_bip_destroy(bip: *mut c_void);
     pub fn awp_zig_bip_reserve(bip: *mut c_void, size: usize, out_ptr: *mut *mut u8) -> c_int;
-    pub fn awp_zig_bip_commit(bip: *mut c_void, size: usize);
+    pub fn awp_zig_bip_commit(bip: *mut c_void, size: usize) -> c_int;
     pub fn awp_zig_bip_peek(
         bip: *mut c_void,
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> c_int;
-    pub fn awp_zig_bip_consume(bip: *mut c_void, size: usize);
+    pub fn awp_zig_bip_consume(bip: *mut c_void, size: usize) -> c_int;
 
     pub fn awp_zig_bipring_create(
         buffer_capacity: usize,

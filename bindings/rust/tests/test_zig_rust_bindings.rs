@@ -161,15 +161,30 @@ fn test_zig_bip_buffer_streaming() {
     let slice = bip.peek().expect("Peek failed");
     assert!(slice.len() >= 33);
     assert_eq!(&slice[..33], b"small_64b_message_payload_example");
-    unsafe { bip.consume(33) };
+    unsafe { bip.consume(33).expect("Consume failed") };
 
     let slice2 = bip.peek().expect("Peek failed");
     assert_eq!(slice2[0], 0xAA);
-    unsafe { bip.consume(512) };
+    unsafe { bip.consume(512).expect("Consume failed") };
 
     let slice3 = bip.peek().expect("Peek failed");
     assert_eq!(slice3[0], 0xBB);
-    unsafe { bip.consume(1400) };
+    unsafe { bip.consume(1400).expect("Consume failed") };
+
+    // Test direct reserve & commit with bounds checking
+    let res = bip.reserve(100).expect("Reserve 100 failed");
+    res[0] = 0xCC;
+    // Overcommit fails
+    unsafe {
+        assert!(bip.commit(101).is_err());
+    }
+    // Correct commit succeeds
+    unsafe {
+        bip.commit(100).expect("Commit 100 failed");
+    }
+    let slice4 = bip.peek().expect("Peek failed");
+    assert_eq!(slice4[0], 0xCC);
+    unsafe { bip.consume(100).expect("Consume failed") };
 }
 
 #[test]
