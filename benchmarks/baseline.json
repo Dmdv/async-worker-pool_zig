@@ -1,0 +1,17 @@
+{
+  "engine": "zig-0.16",
+  "num_messages": 1000000,
+  "num_workers": 32,
+  "pool_throughput_mps": 3.51,
+  "pool_wall_ms": 284.69,
+  "pool_mean_ns": 269119.09,
+  "pool_min_ns": 0,
+  "pool_p50_ns": 666,
+  "pool_p90_ns": 458680,
+  "pool_p99_ns": 5246148,
+  "pool_p999_ns": 10286591,
+  "pool_p9999_ns": 15031731,
+  "pool_max_ns": 15727677,
+  "spsc_throughput_mops": 53.66,
+  "spsc_mean_ns": 18.64
+}

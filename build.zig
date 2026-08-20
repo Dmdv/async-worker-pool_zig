@@ -34,6 +34,9 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(bench_exe);
 
     const run_bench = b.addRunArtifact(bench_exe);
+    if (b.args) |args| {
+        run_bench.addArgs(args);
+    }
     const bench_step = b.step("bench", "Run the Zig dispatch benchmark");
     bench_step.dependOn(&run_bench.step);
 }

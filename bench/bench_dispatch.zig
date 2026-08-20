@@ -1,5 +1,8 @@
 const std = @import("std");
 const awp = @import("awp");
+const c_stdio = @cImport({
+    @cInclude("stdio.h");
+});
 
 const NUM_MSGS = 1_000_000;
 const NUM_WORKERS = 32;
@@ -27,7 +30,7 @@ fn benchProcess(frame: *const awp.Frame) void {
     _ = g_stats[shard].done.fetchAdd(1, .release);
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     std.debug.print("\n=== Zig 0.16 Multi-Threaded Arena Pool & SIMD Dispatch Benchmark ===\n", .{});
     awp.pinToPerformanceCores();
 
@@ -290,4 +293,61 @@ pub fn main() !void {
 
     std.debug.print("Pure SPSC Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ p_throughput / 1e6, p_duration_ns / 1e6 });
     std.debug.print("Pure SPSC Ring Mean Latency: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });
+
+    var json_path: ?[]const u8 = null;
+    var it = std.process.Args.Iterator.init(init.minimal.args);
+    _ = it.skip(); // skip binary name
+    while (it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--json")) {
+            json_path = it.next();
+        }
+    }
+
+    if (json_path) |path| {
+        var buf: [2048]u8 = undefined;
+        const json_content = try std.fmt.bufPrint(&buf,
+            \\{{
+            \\  "engine": "zig-0.16",
+            \\  "num_messages": {d},
+            \\  "num_workers": {d},
+            \\  "pool_throughput_mps": {d:.2},
+            \\  "pool_wall_ms": {d:.2},
+            \\  "pool_mean_ns": {d:.2},
+            \\  "pool_min_ns": {d},
+            \\  "pool_p50_ns": {d},
+            \\  "pool_p90_ns": {d},
+            \\  "pool_p99_ns": {d},
+            \\  "pool_p999_ns": {d},
+            \\  "pool_p9999_ns": {d},
+            \\  "pool_max_ns": {d},
+            \\  "spsc_throughput_mops": {d:.2},
+            \\  "spsc_mean_ns": {d:.2}
+            \\}}
+            \\
+        , .{
+            NUM_MSGS,
+            NUM_WORKERS,
+            throughput / 1e6,
+            duration_ns / 1e6,
+            mean_lat,
+            min_lat,
+            p50_lat,
+            p90_lat,
+            p99_lat,
+            p999_lat,
+            p9999_lat,
+            max_lat,
+            p_throughput / 1e6,
+            p_avg_lat,
+        });
+        var path_z: [1024:0]u8 = undefined;
+        @memcpy(path_z[0..path.len], path);
+        path_z[path.len] = 0;
+        const f = c_stdio.fopen(&path_z, "wb");
+        if (f != null) {
+            _ = c_stdio.fwrite(json_content.ptr, 1, json_content.len, f);
+            _ = c_stdio.fclose(f);
+            std.debug.print("✓ Saved benchmark JSON metrics to: {s}\n\n", .{path});
+        }
+    }
 }
