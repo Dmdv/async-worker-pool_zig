@@ -32,6 +32,7 @@ pub inline fn fastSum64(ptr: [*]const u8) u32 {
 pub const AWP_FLAG_DROPPED: u32 = 0x8000_0000;
 
 const c_time = @cImport({
+    @cInclude("errno.h");
     @cInclude("time.h");
 });
 
@@ -54,6 +55,7 @@ pub inline fn sleepNs(ns: u64) void {
     };
     var rem: c_time.struct_timespec = undefined;
     while (c_time.nanosleep(&req, &rem) != 0) {
+        if (c_time.errno != c_time.EINTR) break;
         req = rem;
     }
 }
