@@ -47,15 +47,24 @@ AWP provides three specialized, complementary architectural primitives designed 
 * **Role:** Asynchronous parallel task execution for background analytics, risk monitoring, FIX persistence, and vectorized batch math.
 * **The AWP Solution:** Sharded lock-free rings across worker threads pinned to Apple Silicon P-cores / Linux NUMA cores, SIMD-accelerated payload validation (`fastSum64` via ARM NEON / AVX-512), and $O(1)$ memory teardown via `std.heap.ArenaAllocator`.
 
+#### 4. `TradingReactor` & `OffPathPipeline` (Hybrid Fast-Path Core & Off-Path Shards)
+* **Role:** Single-threaded quoting and instant alpha execution decoupled from heavy secondary operations.
+* **The AWP Solution:** Fast-path decision loop running on a dedicated performance core emitting `OrderSignal64` with sub-35ns `t2o` latency and non-blocking SPSC fan-out across 3 auxiliary cores (Risk, Audit, Telemetry).
+
+#### 5. `MockExchangeMatcher` & E2E Trading Loop (End-to-End Telemetry)
+* **Role:** Deterministic full-loop testing and nanosecond telemetry across the entire trading lifecycle.
+* **The AWP Solution:** 5-segment loopback engine (Ingress ➔ Decision ➔ Wire Framing ➔ Matching ➔ Portfolio State) delivering **1.75 M ops/s** full round trips at **549.17 ns** with directional position accounting.
+
 ---
 
 ### Safe Rust FFI Abstractions (`awp-zig-rs`)
 
 All core primitives are fully exposed and memory-safe in Rust:
-1. `awp_zig_rs::TradingReactor` & `awp_zig_rs::OffPathPipeline` (Phase 4 Fast-Path Reactor & Off-Path Worker Pipeline)
-2. `awp_zig_rs::BipRing` / `awp_zig_rs::BipBuffer` (with RAII `PacketView` zero-copy lifetime guards)
-3. `awp_zig_rs::Spsc64Ring` / `BookUpdate64` / `Trade64` / `OrderSignal64`
-4. `awp_zig_rs::WorkerPool`
+1. `awp_zig_rs::MockExchangeMatcher` & `awp_zig_rs::TradingReactor` (Phase 5 E2E Tick-to-Execution Loop)
+2. `awp_zig_rs::OffPathPipeline` (Phase 4 Off-Path Worker Pipeline)
+3. `awp_zig_rs::BipRing` / `awp_zig_rs::BipBuffer` (with RAII `PacketView` zero-copy lifetime guards)
+4. `awp_zig_rs::Spsc64Ring` / `BookUpdate64` / `Trade64` / `OrderSignal64` / `ExecutionReport64`
+5. `awp_zig_rs::WorkerPool`
 
 ---
 
