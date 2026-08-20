@@ -119,6 +119,7 @@ extern "C" {
         out_len: *mut usize,
         out_desc: *mut PacketDescriptor,
     ) -> c_int;
+    pub fn awp_zig_bipring_release(ring: *mut c_void, desc: *const PacketDescriptor);
 }
 
 const _: () = {

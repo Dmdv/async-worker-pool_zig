@@ -366,20 +366,28 @@ pub fn main() !void {
         ready: std.atomic.Value(bool),
         done: std.atomic.Value(bool),
         csum: std.atomic.Value(u64),
+        total_lat_ns: std.atomic.Value(u64),
 
         fn runConsumer(ctx: *@This()) void {
             awp.pinToPerformanceCores();
             ctx.ready.store(true, .release);
             var got: usize = 0;
             var sum: u64 = 0;
+            var total_lat: u64 = 0;
             while (got < ctx.n) {
                 if (ctx.ring.popPacket()) |pkt| {
+                    const now = awp.nowNs();
+                    if (now >= pkt.desc.timestamp_ns) {
+                        total_lat +%= (now - pkt.desc.timestamp_ns);
+                    }
                     sum +%= pkt.payload[0] +% pkt.payload[pkt.payload.len - 1] +% pkt.desc.timestamp_ns;
                     got += 1;
+                    ctx.ring.releasePacket(pkt.desc);
                 } else {
                     std.atomic.spinLoopHint();
                 }
             }
+            ctx.total_lat_ns.store(total_lat, .release);
             ctx.csum.store(sum, .release);
             ctx.done.store(true, .release);
         }
@@ -391,6 +399,7 @@ pub fn main() !void {
         .ready = std.atomic.Value(bool).init(false),
         .done = std.atomic.Value(bool).init(false),
         .csum = std.atomic.Value(u64).init(0),
+        .total_lat_ns = std.atomic.Value(u64).init(0),
     };
 
     const bip_cons_thread = try std.Thread.spawn(.{}, BipCtx.runConsumer, .{&bip_ctx});
@@ -408,7 +417,7 @@ pub fn main() !void {
         payload_buf[0] = @truncate(i);
         payload_buf[sz - 1] = @truncate(i >> 8);
 
-        while (!bip_ring.pushPacket(payload_buf[0..sz], @intCast(i))) {
+        while (!bip_ring.pushPacket(payload_buf[0..sz], awp.nowNs())) {
             std.atomic.spinLoopHint();
         }
     }
@@ -418,10 +427,11 @@ pub fn main() !void {
     const bip_duration_ns = @as(f64, @floatFromInt(bip_t1 - bip_t0));
     const bip_duration_sec = bip_duration_ns / 1_000_000_000.0;
     const bip_throughput = @as(f64, @floatFromInt(BIP_MSGS)) / bip_duration_sec;
-    const bip_avg_lat = bip_duration_ns / @as(f64, @floatFromInt(BIP_MSGS));
+    const bip_service_time = bip_duration_ns / @as(f64, @floatFromInt(BIP_MSGS));
+    const bip_avg_lat = @as(f64, @floatFromInt(bip_ctx.total_lat_ns.load(.monotonic))) / @as(f64, @floatFromInt(BIP_MSGS));
 
-    std.debug.print("Variable-Length BipBuffer Throughput: {d:.2} M pkts/sec (Wall: {d:.2} ms)\n", .{ bip_throughput / 1e6, bip_duration_ns / 1e6 });
-    std.debug.print("Variable-Length BipBuffer Mean Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ bip_avg_lat, bip_avg_lat / 1000.0, bip_ctx.csum.load(.monotonic) });
+    std.debug.print("Variable-Length BipRing Throughput: {d:.2} M pkts/sec (Service Time: {d:.2} ns/pkt)\n", .{ bip_throughput / 1e6, bip_service_time });
+    std.debug.print("Variable-Length BipRing Mean Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ bip_avg_lat, bip_avg_lat / 1000.0, bip_ctx.csum.load(.monotonic) });
 
     var json_path: ?[]const u8 = null;
     const env_val = c_stdio.getenv("BENCH_JSON_OUT");

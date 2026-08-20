@@ -182,15 +182,19 @@ fn test_zig_bip_ring_packet_streaming() {
     assert!(ring.push_packet(p1, 1_000_001));
     assert!(ring.push_packet(&p2, 1_000_002));
 
-    let pkt1 = ring.pop_packet().expect("Pop pkt1 failed");
-    assert_eq!(pkt1.payload(), p1);
-    assert_eq!(pkt1.timestamp_ns(), 1_000_001);
-    assert_eq!(pkt1.len(), p1.len());
+    {
+        let pkt1 = ring.pop_packet().expect("Pop pkt1 failed");
+        assert_eq!(pkt1.payload(), p1);
+        assert_eq!(pkt1.timestamp_ns(), 1_000_001);
+        assert_eq!(pkt1.len(), p1.len());
+    }
 
-    let pkt2 = ring.pop_packet().expect("Pop pkt2 failed");
-    assert_eq!(pkt2.payload(), &p2[..]);
-    assert_eq!(pkt2.timestamp_ns(), 1_000_002);
-    assert_eq!(pkt2.len(), 1400);
+    {
+        let pkt2 = ring.pop_packet().expect("Pop pkt2 failed");
+        assert_eq!(pkt2.payload(), &p2[..]);
+        assert_eq!(pkt2.timestamp_ns(), 1_000_002);
+        assert_eq!(pkt2.len(), 1400);
+    }
 
     assert!(ring.pop_packet().is_none());
 }

@@ -396,7 +396,10 @@ impl Drop for BipBuffer {
 }
 
 /// A discrete packet view popped from `BipRing`.
+///
+/// Automatically releases its slot in `BipRing` when dropped (Zero-Copy RAII).
 pub struct PacketView<'a> {
+    ring: &'a mut BipRing,
     payload: &'a [u8],
     desc: sys::PacketDescriptor,
 }
@@ -425,6 +428,12 @@ impl<'a> PacketView<'a> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.desc.len == 0
+    }
+}
+
+impl<'a> Drop for PacketView<'a> {
+    fn drop(&mut self) {
+        unsafe { sys::awp_zig_bipring_release(self.ring.handle, &self.desc) };
     }
 }
 
@@ -465,8 +474,10 @@ impl BipRing {
         let rc =
             unsafe { sys::awp_zig_bipring_pop(self.handle, &mut out_ptr, &mut out_len, &mut desc) };
         if rc == 0 && !out_ptr.is_null() && out_len > 0 {
+            let payload = unsafe { std::slice::from_raw_parts(out_ptr, out_len) };
             Some(PacketView {
-                payload: unsafe { std::slice::from_raw_parts(out_ptr, out_len) },
+                ring: self,
+                payload,
                 desc,
             })
         } else {

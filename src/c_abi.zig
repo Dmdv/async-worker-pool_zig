@@ -377,7 +377,6 @@ pub const DynamicBip = struct {
             if (self.is_reading_b.load(.acquire)) {
                 const wb = self.write_b.load(.monotonic);
                 self.write_a.store(wb, .release);
-                self.write_b.store(0, .monotonic);
                 self.is_b_active.store(false, .release);
 
                 if (self.capacity - wb >= size) {
@@ -675,8 +674,12 @@ pub const DynamicBipRing = struct {
         const desc = self.desc_ring.popValue() orelse return null;
         out_desc.* = desc;
         const end_offset = desc.offset + desc.len;
-        self.read_offset.store(end_offset, .release);
         return self.buffer[desc.offset..end_offset];
+    }
+
+    pub inline fn releasePacket(self: *DynamicBipRing, desc: root.PacketDescriptor) void {
+        const end_offset = desc.offset + desc.len;
+        self.read_offset.store(end_offset, .release);
     }
 };
 
@@ -713,4 +716,11 @@ pub export fn awp_zig_bipring_pop(ring_ptr: ?*anyopaque, out_payload: *[*]const 
         return 0;
     }
     return -11; // EAGAIN / Empty
+}
+
+pub export fn awp_zig_bipring_release(ring_ptr: ?*anyopaque, desc: *const root.PacketDescriptor) callconv(.c) void {
+    if (ring_ptr) |ptr| {
+        const ring: *DynamicBipRing = @ptrCast(@alignCast(ptr));
+        ring.releasePacket(desc.*);
+    }
 }

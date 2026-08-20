@@ -170,7 +170,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
                 if key in ("pool_mean_ns", "pool_p99_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 25000.0:  # Ignore sub-25us micro-jitter on non-RTOS OS
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
-                elif key in ("spsc_mean_ns", "spsc64_mean_ns") and delta_pct > max_lat_rise_pct:
+                elif key in ("spsc_mean_ns", "spsc64_mean_ns", "bip_mean_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 50.0:  # Ignore sub-50ns cache warm-up jitter
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
             else:

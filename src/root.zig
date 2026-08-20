@@ -712,7 +712,6 @@ pub fn BipBuffer(comptime capacity: usize) type {
                     // Region A is completely freed, so promote Region B to Region A
                     const wb = self.write_b.load(.monotonic);
                     self.write_a.store(wb, .release);
-                    self.write_b.store(0, .monotonic);
                     self.is_b_active.store(false, .release);
 
                     // Retry in Region A
@@ -863,9 +862,11 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
 
         pub fn init(allocator: std.mem.Allocator) !Self {
             const buf = try allocator.alloc(u8, buffer_capacity);
+            errdefer allocator.free(buf);
+            const desc_ring = try DescRing.init(allocator);
             return Self{
                 .buffer = buf,
-                .desc_ring = try DescRing.init(allocator),
+                .desc_ring = desc_ring,
                 .write_offset = std.atomic.Value(usize).init(0),
                 .cached_read_offset = 0,
                 .read_offset = std.atomic.Value(usize).init(0),
@@ -956,11 +957,15 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
         pub inline fn popPacket(self: *Self) ?struct { desc: PacketDescriptor, payload: []const u8 } {
             const desc = self.desc_ring.popValue() orelse return null;
             const end_offset = desc.offset + desc.len;
-            self.read_offset.store(end_offset, .release);
             return .{
                 .desc = desc,
                 .payload = self.buffer[desc.offset..end_offset],
             };
+        }
+
+        pub inline fn releasePacket(self: *Self, desc: PacketDescriptor) void {
+            const end_offset = desc.offset + desc.len;
+            self.read_offset.store(end_offset, .release);
         }
     };
 }
@@ -1183,18 +1188,21 @@ test "BipRing variable-length packet streaming" {
     try std.testing.expectEqual(@as(u64, 1001), rec1.?.desc.timestamp_ns);
     try std.testing.expectEqual(@as(usize, 64), rec1.?.payload.len);
     try std.testing.expectEqual(@as(u8, 0x11), rec1.?.payload[0]);
+    ring.releasePacket(rec1.?.desc);
 
     const rec2 = ring.popPacket();
     try std.testing.expect(rec2 != null);
     try std.testing.expectEqual(@as(u64, 1002), rec2.?.desc.timestamp_ns);
     try std.testing.expectEqual(@as(usize, 256), rec2.?.payload.len);
     try std.testing.expectEqual(@as(u8, 0x22), rec2.?.payload[0]);
+    ring.releasePacket(rec2.?.desc);
 
     const rec3 = ring.popPacket();
     try std.testing.expect(rec3 != null);
     try std.testing.expectEqual(@as(u64, 1003), rec3.?.desc.timestamp_ns);
     try std.testing.expectEqual(@as(usize, 1500), rec3.?.payload.len);
     try std.testing.expectEqual(@as(u8, 0x33), rec3.?.payload[0]);
+    ring.releasePacket(rec3.?.desc);
 
     try std.testing.expect(ring.popPacket() == null);
 }
