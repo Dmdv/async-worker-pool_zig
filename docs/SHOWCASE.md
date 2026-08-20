@@ -115,7 +115,7 @@ fn main() -> Result<(), AwpError> {
     }
 
     // 4. Query off-path background worker statistics
-    let stats = offpath.stats();
+    let stats = reactor.offpath_stats().unwrap();
     println!("Worker Stats: Risk={}, Audit={}, Telemetry={}, Overruns={}",
         stats.risk_processed, stats.audit_processed, stats.telemetry_processed, reactor.overruns());
 
