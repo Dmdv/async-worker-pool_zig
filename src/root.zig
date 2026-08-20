@@ -642,8 +642,6 @@ pub fn BipBuffer(comptime capacity: usize) type {
         // Consumer State (Exclusively written by Consumer - Cacheline 1)
         read_a: std.atomic.Value(usize) align(64),
         is_reading_b: std.atomic.Value(bool),
-        cached_write_a: usize,
-        cached_write_b: usize,
 
         allocator: ?std.mem.Allocator,
         slab: ?*HftMemorySlab,
@@ -658,8 +656,6 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 .cached_read_a = 0,
                 .read_a = std.atomic.Value(usize).init(0),
                 .is_reading_b = std.atomic.Value(bool).init(false),
-                .cached_write_a = 0,
-                .cached_write_b = 0,
                 .allocator = allocator,
                 .slab = null,
             };
@@ -677,8 +673,6 @@ pub fn BipBuffer(comptime capacity: usize) type {
                 .cached_read_a = 0,
                 .read_a = std.atomic.Value(usize).init(0),
                 .is_reading_b = std.atomic.Value(bool).init(false),
-                .cached_write_a = 0,
-                .cached_write_b = 0,
                 .allocator = null,
                 .slab = slab,
             };
@@ -847,6 +841,7 @@ comptime {
 pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: usize) type {
     comptime {
         std.debug.assert(std.math.isPowerOfTwo(buffer_capacity) and buffer_capacity >= 64);
+        std.debug.assert(buffer_capacity <= std.math.maxInt(u32));
     }
     return struct {
         const Self = @This();
@@ -861,7 +856,6 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
 
         // Consumer State (Cacheline 1 - align(64))
         read_offset: std.atomic.Value(usize) align(64),
-        cached_write_offset: usize,
 
         allocator: ?std.mem.Allocator,
         slab: ?*HftMemorySlab,
@@ -875,7 +869,6 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
                 .write_offset = std.atomic.Value(usize).init(0),
                 .cached_read_offset = 0,
                 .read_offset = std.atomic.Value(usize).init(0),
-                .cached_write_offset = 0,
                 .allocator = allocator,
                 .slab = null,
                 .desc_slab = null,
@@ -892,7 +885,6 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
                 .write_offset = std.atomic.Value(usize).init(0),
                 .cached_read_offset = 0,
                 .read_offset = std.atomic.Value(usize).init(0),
-                .cached_write_offset = 0,
                 .allocator = null,
                 .slab = bip_slab,
                 .desc_slab = desc_slab,

@@ -327,8 +327,6 @@ pub const DynamicBip = struct {
 
     read_a: std.atomic.Value(usize) align(64),
     is_reading_b: std.atomic.Value(bool),
-    cached_write_a: usize,
-    cached_write_b: usize,
     capacity: usize,
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !*DynamicBip {
@@ -348,8 +346,6 @@ pub const DynamicBip = struct {
             .cached_read_a = 0,
             .read_a = std.atomic.Value(usize).init(0),
             .is_reading_b = std.atomic.Value(bool).init(false),
-            .cached_write_a = 0,
-            .cached_write_b = 0,
             .capacity = capacity,
         };
         return self;
@@ -593,11 +589,10 @@ pub const DynamicBipRing = struct {
     write_offset: std.atomic.Value(usize) align(64),
     cached_read_offset: usize,
     read_offset: std.atomic.Value(usize) align(64),
-    cached_write_offset: usize,
     buffer_capacity: usize,
 
     pub fn init(allocator: std.mem.Allocator, buffer_capacity: usize, desc_capacity: usize) !*DynamicBipRing {
-        if (!std.math.isPowerOfTwo(buffer_capacity) or buffer_capacity < 64) return error.InvalidCapacity;
+        if (!std.math.isPowerOfTwo(buffer_capacity) or buffer_capacity < 64 or buffer_capacity > std.math.maxInt(u32)) return error.InvalidCapacity;
         if (!std.math.isPowerOfTwo(desc_capacity) or desc_capacity < 2) return error.InvalidCapacity;
 
         const self = try allocator.create(DynamicBipRing);
@@ -615,7 +610,6 @@ pub const DynamicBipRing = struct {
             .write_offset = std.atomic.Value(usize).init(0),
             .cached_read_offset = 0,
             .read_offset = std.atomic.Value(usize).init(0),
-            .cached_write_offset = 0,
             .buffer_capacity = buffer_capacity,
         };
         return self;
@@ -687,7 +681,7 @@ pub const DynamicBipRing = struct {
 };
 
 pub export fn awp_zig_bipring_create(buffer_capacity: usize, desc_capacity: usize, out_ring: *?*anyopaque) callconv(.c) c_int {
-    if (!std.math.isPowerOfTwo(buffer_capacity) or buffer_capacity < 64) return -22;
+    if (!std.math.isPowerOfTwo(buffer_capacity) or buffer_capacity < 64 or buffer_capacity > std.math.maxInt(u32)) return -22;
     if (!std.math.isPowerOfTwo(desc_capacity) or desc_capacity < 2) return -22;
     const ring = DynamicBipRing.init(std.heap.c_allocator, buffer_capacity, desc_capacity) catch return -12;
     out_ring.* = @ptrCast(ring);
@@ -702,10 +696,9 @@ pub export fn awp_zig_bipring_destroy(ring_ptr: ?*anyopaque) callconv(.c) void {
 }
 
 pub export fn awp_zig_bipring_push(ring_ptr: ?*anyopaque, payload: ?[*]const u8, len: usize, timestamp_ns: u64) callconv(.c) c_int {
-    if (ring_ptr == null or (payload == null and len > 0)) return -22;
+    if (ring_ptr == null or len == 0 or payload == null) return -22;
     const ring: *DynamicBipRing = @ptrCast(@alignCast(ring_ptr.?));
-    const slice = if (payload) |p| p[0..len] else &[_]u8{};
-    if (ring.pushPacket(slice, timestamp_ns)) {
+    if (ring.pushPacket(payload.?[0..len], timestamp_ns)) {
         return 0;
     }
     return -11; // EAGAIN / Full

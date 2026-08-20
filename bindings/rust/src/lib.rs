@@ -320,7 +320,6 @@ pub struct BipBuffer {
 }
 
 unsafe impl Send for BipBuffer {}
-unsafe impl Sync for BipBuffer {}
 
 impl BipBuffer {
     /// Create a new BipBuffer with specified byte capacity (must be power of two >= 64).
@@ -346,15 +345,18 @@ impl BipBuffer {
     }
 
     /// Commit previously reserved bytes.
-    pub fn commit(&mut self, size: usize) {
-        unsafe { sys::awp_zig_bip_commit(self.handle, size) };
+    ///
+    /// # Safety
+    /// Caller must ensure `size` does not exceed the length of the slice returned by the last successful `reserve()`.
+    pub unsafe fn commit(&mut self, size: usize) {
+        sys::awp_zig_bip_commit(self.handle, size);
     }
 
     /// Push contiguous data into BipBuffer (convenience copy wrapper).
     pub fn push(&mut self, data: &[u8]) -> bool {
         if let Some(buf) = self.reserve(data.len()) {
             buf.copy_from_slice(data);
-            self.commit(data.len());
+            unsafe { self.commit(data.len()) };
             true
         } else {
             false
@@ -362,7 +364,7 @@ impl BipBuffer {
     }
 
     /// Zero-Copy Peek: view the next readable contiguous slice.
-    pub fn peek(&self) -> Option<&[u8]> {
+    pub fn peek(&mut self) -> Option<&[u8]> {
         let mut out_ptr = ptr::null();
         let mut out_len = 0;
         let rc = unsafe { sys::awp_zig_bip_peek(self.handle, &mut out_ptr, &mut out_len) };
@@ -374,8 +376,11 @@ impl BipBuffer {
     }
 
     /// Mark `size` bytes as consumed.
-    pub fn consume(&mut self, size: usize) {
-        unsafe { sys::awp_zig_bip_consume(self.handle, size) };
+    ///
+    /// # Safety
+    /// Caller must ensure `size` does not exceed the length of the slice returned by the last successful `peek()`.
+    pub unsafe fn consume(&mut self, size: usize) {
+        sys::awp_zig_bip_consume(self.handle, size);
     }
 }
 
@@ -429,7 +434,6 @@ pub struct BipRing {
 }
 
 unsafe impl Send for BipRing {}
-unsafe impl Sync for BipRing {}
 
 impl BipRing {
     /// Create a new BipRing with specified buffer byte capacity and descriptor queue capacity (powers of two).

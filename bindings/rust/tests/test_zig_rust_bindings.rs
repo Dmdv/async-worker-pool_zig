@@ -161,15 +161,15 @@ fn test_zig_bip_buffer_streaming() {
     let slice = bip.peek().expect("Peek failed");
     assert!(slice.len() >= 33);
     assert_eq!(&slice[..33], b"small_64b_message_payload_example");
-    bip.consume(33);
+    unsafe { bip.consume(33) };
 
     let slice2 = bip.peek().expect("Peek failed");
     assert_eq!(slice2[0], 0xAA);
-    bip.consume(512);
+    unsafe { bip.consume(512) };
 
     let slice3 = bip.peek().expect("Peek failed");
     assert_eq!(slice3[0], 0xBB);
-    bip.consume(1400);
+    unsafe { bip.consume(1400) };
 }
 
 #[test]
