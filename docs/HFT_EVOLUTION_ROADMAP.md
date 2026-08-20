@@ -127,7 +127,7 @@ flowchart TD
 
 - **Objective:** Ultra-fast streaming of arbitrary payload sizes (64B to 1500B MTU and up to 64KB) without buffer fragmentation, memcpy split-wrapping, or 4KB slot waste.
 - **Microarchitecture:**
-  - **Bipartite Circular Buffer (`BipBuffer`):** Circular memory arena that guarantees 100% physically contiguous zero-copy memory slices for both producer and consumer. When a variable-length packet does not fit in the remaining space at the end of the buffer (Region A), the producer wraps the entire contiguous packet to the beginning of the buffer (Region B), eliminating memory fragmentation and boundary split memcpy.
+  - **Bipartite Circular Buffer (`BipBuffer`):** Circular memory arena that guarantees a contiguous virtual-memory slice for both producer and consumer. When a variable-length packet does not fit in the remaining space at the end of the buffer (Region A), Region B is selected at index 0 when sufficient contiguous space is available (otherwise `reserve` returns `null`), eliminating memory fragmentation and boundary-split copies.
   - **Descriptor-Indexed Packet Ring (`BipRing`):** Couples the variable-length BipBuffer payload storage with a lock-free 16-byte `PacketDescriptor` SPSC ring (`timestamp_ns: u64`, `offset: u32`, `len: u32`), enabling discrete packet boundary delivery with zero parsing overhead.
   - **Memory Separation & Atomic Synchronization:** Cacheline-aligned separation (`align(64)`) of producer write state and consumer read state to eliminate false sharing.
 - **Verified Benchmark Results:**
@@ -135,9 +135,9 @@ flowchart TD
   - Latency: **`70.38 ns`** per packet
   - Payload Sizes tested: 64B, 128B, 256B, 512B, 1024B, 1400B (MTU Ethernet frames)
 - **Rust FFI Bindings:**
-  - `awp_zig_rs::BipBuffer`: Direct byte-level Zero-Copy `reserve(&mut self, size) -> Option<&mut [u8]>`, `commit(&mut self, size)`, `peek(&self) -> Option<&[u8]>`, `consume(&mut self, size)`.
+  - `awp_zig_rs::BipBuffer`: Direct byte-level Zero-Copy `reserve(&mut self, size) -> Option<&mut [u8]>`, `unsafe commit(&mut self, size)`, `peek(&mut self) -> Option<&[u8]>`, `unsafe consume(&mut self, size)`.
   - `awp_zig_rs::BipRing`: Packet-level streaming `push_packet(&mut self, payload: &[u8], timestamp_ns: u64) -> bool` and `pop_packet(&mut self) -> Option<PacketView<'_>>`.
-  - `awp_zig_rs::PacketView`: Zero-copy typed accessor for payload slice and ingress nanosecond hardware timestamp.
+  - `awp_zig_rs::PacketView`: RAII Zero-Copy typed accessor for payload slice and ingress nanosecond hardware timestamp (automatically releases packet on `Drop`).
 
 ---
 
