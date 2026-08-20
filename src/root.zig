@@ -29,6 +29,8 @@ pub inline fn fastSum64(ptr: [*]const u8) u32 {
     return @reduce(.Add, v_wide);
 }
 
+pub const AWP_FLAG_DROPPED: u32 = 0x8000_0000;
+
 const c_time = @cImport({
     @cInclude("time.h");
 });
@@ -37,28 +39,11 @@ const c_mman = @cImport({
     @cInclude("sys/mman.h");
 });
 
-/// Hardware zero-syscall nanosecond timer using CPU cycle registers
+/// Nanosecond monotonic timestamp reader (POSIX clock_gettime)
 pub inline fn nowNs() u64 {
-    if (@import("builtin").cpu.arch == .aarch64) {
-        var val: u64 = undefined;
-        asm volatile ("mrs %[val], cntvct_el0"
-            : [val] "=r" (val),
-        );
-        // 24MHz timer frequency on Apple Silicon (1 tick = 41.666 ns = 125/3 ns)
-        return (val * 125) / 3;
-    } else if (@import("builtin").cpu.arch == .x86_64) {
-        var low: u32 = undefined;
-        var high: u32 = undefined;
-        asm volatile ("rdtsc"
-            : [low] "={eax}" (low),
-              [high] "={edx}" (high),
-        );
-        return (@as(u64, high) << 32) | @as(u64, low);
-    } else {
-        var ts: c_time.struct_timespec = undefined;
-        _ = c_time.clock_gettime(c_time.CLOCK_MONOTONIC, &ts);
-        return @as(u64, @intCast(ts.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(ts.tv_nsec));
-    }
+    var ts: c_time.struct_timespec = undefined;
+    _ = c_time.clock_gettime(c_time.CLOCK_MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(ts.tv_nsec));
 }
 
 /// Pin current thread to Apple Silicon P-Core (Performance Core)
@@ -72,12 +57,13 @@ pub fn pinToPerformanceCores() void {
     }
 }
 
-/// Low-Latency HugePage & Prefaulted Memory Allocator
-/// Ensures 0 Minor Page Faults and minimal TLB footprint
+/// Low-Latency Prefaulted & Page-Aligned Memory Slab
+/// Pre-touches 4KB pages to eliminate runtime Demand-Paging Minor Page Faults
 pub const HftMemorySlab = struct {
     ptr: [*]align(64) u8,
     len: usize,
 
+    /// Strict allocation with mlock verification (returns error if memory cannot be locked)
     pub fn allocate(size_bytes: usize) !HftMemorySlab {
         const page_size = 4096;
         const aligned_size = std.mem.alignForward(usize, size_bytes, page_size);
@@ -96,7 +82,36 @@ pub const HftMemorySlab = struct {
             ptr[off] = 0;
         }
 
-        // Lock memory to physical RAM to prevent swapping
+        // Lock memory to physical RAM to prevent paging/swapping
+        if (c_mman.mlock(raw, aligned_size) != 0) {
+            _ = c_mman.munmap(raw, aligned_size);
+            return error.MlockFailed;
+        }
+
+        return HftMemorySlab{
+            .ptr = ptr,
+            .len = aligned_size,
+        };
+    }
+
+    /// Permissive allocation (attempts mlock, succeeds even if RLIMIT_MEMLOCK is restricted in unprivileged containers)
+    pub fn allocatePermissive(size_bytes: usize) !HftMemorySlab {
+        const page_size = 4096;
+        const aligned_size = std.mem.alignForward(usize, size_bytes, page_size);
+
+        const flags: c_int = c_mman.MAP_PRIVATE | c_mman.MAP_ANON;
+        const raw = c_mman.mmap(null, aligned_size, c_mman.PROT_READ | c_mman.PROT_WRITE, flags, -1, 0);
+        if (raw == c_mman.MAP_FAILED) {
+            return error.OutOfMemory;
+        }
+
+        const ptr: [*]align(64) u8 = @ptrCast(@alignCast(raw));
+
+        var off: usize = 0;
+        while (off < aligned_size) : (off += page_size) {
+            ptr[off] = 0;
+        }
+
         _ = c_mman.mlock(raw, aligned_size);
 
         return HftMemorySlab{
@@ -257,6 +272,7 @@ pub fn LockFreeRing(comptime capacity: usize) type {
                     }
                     const f = &self.frames[pos & mask];
                     f.shard = shard;
+                    f.flags = 0;
                     f.submit_ns = nowNs();
                     @prefetch(&self.frames[(pos + PREFETCH_DISTANCE) & mask], .{ .rw = .write, .locality = 3, .cache = .data });
                     return Claim{

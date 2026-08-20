@@ -54,6 +54,7 @@ pub const DynamicRing = struct {
                 }
                 const f = &self.frames[pos & self.mask];
                 f.shard = shard;
+                f.flags = 0;
                 f.submit_ns = root.nowNs();
                 @prefetch(&self.frames[(pos + 1) & self.mask], .{ .rw = .write, .locality = 3, .cache = .data });
                 return Claim{
@@ -85,7 +86,9 @@ pub const DynamicRing = struct {
             self.dequeue_pos.store(pos + 1, .monotonic);
             const data = &self.frames[pos & self.mask];
             @prefetch(&self.frames[(pos + 1) & self.mask], .{ .rw = .read, .locality = 3, .cache = .data });
-            _ = callback(data, user);
+            if (data.flags & root.AWP_FLAG_DROPPED == 0) {
+                _ = callback(data, user);
+            }
             cell.sequence.store(pos + self.capacity, .release);
             return true;
         } else {
@@ -141,6 +144,9 @@ pub const DynamicPool = struct {
                 self.running.store(false, .release);
                 for (self.threads[0..i]) |t| {
                     t.join();
+                }
+                for (rings) |*r| {
+                    r.deinit();
                 }
                 return err;
             };

@@ -284,9 +284,10 @@ pub fn main() !void {
         }
     };
 
+    const PTR_MSGS = 5_000_000;
     var ptr_ctx = PtrCtx{
         .ring = &ptr_ring,
-        .n = NUM_MSGS,
+        .n = PTR_MSGS,
         .ready = std.atomic.Value(bool).init(false),
         .done = std.atomic.Value(bool).init(false),
     };
@@ -297,7 +298,7 @@ pub fn main() !void {
     }
     const p_t0 = awp.nowNs();
 
-    for (0..NUM_MSGS) |i| {
+    for (0..PTR_MSGS) |i| {
         while (!ptr_ring.push(i)) {
             std.atomic.spinLoopHint();
         }
@@ -307,8 +308,8 @@ pub fn main() !void {
     const p_t1 = awp.nowNs();
     const p_duration_ns = @as(f64, @floatFromInt(p_t1 - p_t0));
     const p_duration_sec = p_duration_ns / 1_000_000_000.0;
-    const p_throughput = @as(f64, @floatFromInt(NUM_MSGS)) / p_duration_sec;
-    const p_avg_lat = p_duration_ns / @as(f64, @floatFromInt(NUM_MSGS));
+    const p_throughput = @as(f64, @floatFromInt(PTR_MSGS)) / p_duration_sec;
+    const p_avg_lat = p_duration_ns / @as(f64, @floatFromInt(PTR_MSGS));
 
     std.debug.print("Pure SPSC Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ p_throughput / 1e6, p_duration_ns / 1e6 });
     std.debug.print("Pure SPSC Ring Mean Latency: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });

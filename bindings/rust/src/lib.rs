@@ -172,10 +172,11 @@ impl<'a> ClaimGuard<'a> {
         }
     }
 
-    /// Explicitly abort/discard the claim without committing to the worker.
+    /// Explicitly abort/discard the claim without committing user work.
+    /// Safely commits a dropped frame (AWP_FLAG_DROPPED) so the ring sequence can advance without triggering worker callbacks.
     #[inline]
-    pub fn abort(mut self) {
-        self.committed = true;
+    pub fn abort(self) {
+        // Drop implementation publishes the tombstone frame to advance the ring sequence
     }
 }
 
