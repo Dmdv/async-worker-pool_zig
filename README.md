@@ -35,9 +35,9 @@ Executed on Apple Silicon Performance Cores (Darwin arm64):
 
 | Engine / Project | Language | Workload | Throughput | Median (p50) | p99 Latency | Mean Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (4 Pinned Workers) | **5.83 M msg/sec** 🚀 | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
-| **`async-worker-pool_zig`** | Zig 0.16 | Pure Pointer SPSC Ring (0 CAS) | **163.72 M ops/sec** 🚀 | **< 6 ns** | **< 8 ns** | **6.11 ns** |
-| **`async-worker-pool_zig`** (Phase 2) | Zig 0.16 | 64-Byte POD Cacheline Ring (`BookUpdate64`) | **22.73 M ops/sec** 🚀 | **< 30 ns** | **< 45 ns** | **44.00 ns** |
+| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (4 Pinned Workers) | **5.38 M msg/sec** 🚀 | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
+| **`async-worker-pool_zig`** | Zig 0.16 | Pure Pointer SPSC Ring (0 CAS) | **171.76 M ops/sec** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** |
+| **`async-worker-pool_zig`** (Phase 2) | Zig 0.16 | 64-Byte POD Cacheline Ring (`BookUpdate64`) | **28.54 M ops/sec** 🚀 | **< 30 ns** | **< 45 ns** | **35.03 ns** |
 | **`async-worker-pool_zig`** (Phase 3) | Zig 0.16 | Variable-Length Zero-Copy BipRing (64B–1400B) | **14.21 M pkts/sec** 🚀 | **< 50 ns** | **< 80 ns** | **70.38 ns** |
 | **`awp-zig-rs`** ([`bindings/rust`](bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **5.45 M msg/sec** 🚀 | **< 150 ns** | **3.80 µs** (3,800 ns) | **920.0 ns** (0.92 µs) |
 | **[`async-worker-pool`](https://github.com/Dmdv/async-worker-pool)** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3.46 µs** (3,458 ns) | **1.11 ms** (1,110,000 ns) | **2.11 µs** (2,109 ns) |
