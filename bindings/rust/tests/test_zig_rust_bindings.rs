@@ -261,3 +261,75 @@ fn test_zig_reactor_and_offpath_pipeline() {
     assert_eq!(stats.audit_processed, 100);
     assert_eq!(stats.telemetry_processed, 100);
 }
+
+#[test]
+fn test_zig_e2e_tick_to_execution_loopback() {
+    let mut matcher = awp_zig_rs::MockExchangeMatcher::new(256).expect("Failed to create MockExchangeMatcher");
+    matcher.start().expect("Failed to start MockExchangeMatcher");
+
+    let mut reactor = awp_zig_rs::TradingReactor::new().expect("Failed to create TradingReactor");
+
+    // 1. Submit 50 ticks to reactor and push generated signals to mock matcher
+    for i in 0..50 {
+        let update = awp_zig_rs::BookUpdate64 {
+            timestamp_ns: 2_000_000 + i,
+            seq: i + 1,
+            symbol_id: 1,
+            flags: 1,
+            bid_price: 60_000.0 + i as f64,
+            bid_qty: 1.5,
+            ask_price: 60_001.0 + i as f64,
+            ask_qty: 2.0,
+            _reserved: [0; 8],
+        };
+
+        let sig = reactor.process_tick(&update).expect("FFI call failed").expect("Signal expected");
+        matcher.push_order(&sig).expect("Failed to push order to matcher");
+    }
+
+    // 2. Wait for matcher to complete matching
+    let mut waited = 0;
+    while matcher.matched_count() < 50 && waited < 100 {
+        thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+
+    assert_eq!(matcher.matched_count(), 50);
+
+    // 3. Drain execution reports from matcher back into reactor
+    let mut acks = 0;
+    while let Some(rep) = matcher.pop_report() {
+        assert_eq!(rep.status, awp_zig_rs::ExecStatus::Filled);
+        assert_eq!(rep.fill_qty, 1.5);
+        reactor.on_execution(&rep).expect("Failed to process execution report");
+        acks += 1;
+    }
+
+    assert_eq!(acks, 50);
+    let (pos, notional, count) = reactor.position();
+    assert_eq!(count, 50);
+    assert_eq!(pos, 75.0);
+    assert!(notional > 0.0);
+
+    // 4. Test a Sell fill to verify directional position updates
+    let sell_report = awp_zig_rs::ExecutionReport64 {
+        timestamp_ns: 3_000_000,
+        order_id: 1001,
+        exec_id: 2001,
+        fill_price: 61_000.0,
+        fill_qty: 25.0,
+        leaves_qty: 0.0,
+        match_ts_ns: 3_000_001,
+        symbol_id: 1,
+        status: awp_zig_rs::ExecStatus::Filled,
+        side: 1, // Sell
+        _pad: 0,
+    };
+    reactor.on_execution(&sell_report).expect("Failed on sell report");
+    let (new_pos, _, new_count) = reactor.position();
+    assert_eq!(new_count, 51);
+    assert_eq!(new_pos, 50.0); // 75.0 - 25.0 = 50.0
+
+    matcher.stop();
+}
+

@@ -12,8 +12,8 @@ pub mod sys;
 
 pub use error::AwpError;
 pub use sys::{
-    AwpClaim, AwpFrame, BookUpdate64, OrderSignal64, PacketDescriptor, Trade64, AWP_FEED_MAX,
-    AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX,
+    AwpClaim, AwpFrame, BookUpdate64, ExecStatus, ExecutionReport64, OrderSignal64,
+    PacketDescriptor, Trade64, AWP_FEED_MAX, AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX,
 };
 
 use std::os::raw::{c_int, c_void};
@@ -593,6 +593,27 @@ impl<'a> TradingReactor<'a> {
     pub fn overruns(&self) -> u64 {
         unsafe { sys::awp_zig_reactor_get_overruns(self.handle) }
     }
+
+    /// Process incoming ExecutionReport on Fast-Path Core (Zero Syscalls, Zero Locks)
+    pub fn on_execution(&mut self, report: &ExecutionReport64) -> Result<(), AwpError> {
+        let rc = unsafe { sys::awp_zig_reactor_on_execution(self.handle, report) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Query current position, total fill notional, and count of acked orders
+    pub fn position(&self) -> (f64, f64, u64) {
+        let mut pos = 0.0;
+        let mut notional = 0.0;
+        let mut acked = 0;
+        unsafe {
+            sys::awp_zig_reactor_get_position(self.handle, &mut pos, &mut notional, &mut acked);
+        }
+        (pos, notional, acked)
+    }
 }
 
 impl<'a> Drop for TradingReactor<'a> {
@@ -676,3 +697,80 @@ impl Drop for OffPathPipeline {
         }
     }
 }
+
+/// Simulated In-Memory Mock Matching Engine for Deterministic Loopback Testing
+pub struct MockExchangeMatcher {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for MockExchangeMatcher {}
+
+impl MockExchangeMatcher {
+    /// Create a new MockExchangeMatcher with specified queue capacity
+    pub fn new(capacity: usize) -> Result<Self, AwpError> {
+        let mut handle = ptr::null_mut();
+        let rc = unsafe { sys::awp_zig_mock_matcher_create(capacity, &mut handle) };
+        if rc == 0 {
+            Ok(Self { handle })
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Start matching engine background thread
+    pub fn start(&mut self) -> Result<(), AwpError> {
+        let rc = unsafe { sys::awp_zig_mock_matcher_start(self.handle) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Stop matching engine background thread
+    pub fn stop(&mut self) {
+        unsafe {
+            sys::awp_zig_mock_matcher_stop(self.handle);
+        }
+    }
+
+    /// Push an order signal into the match engine input queue
+    pub fn push_order(&mut self, order: &OrderSignal64) -> Result<(), AwpError> {
+        let rc = unsafe { sys::awp_zig_mock_matcher_push_order(self.handle, order) };
+        if rc == 0 {
+            Ok(())
+        } else if rc == 1 {
+            Err(AwpError::QueueFull)
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Pop next execution report from the match engine output queue
+    pub fn pop_report(&mut self) -> Option<ExecutionReport64> {
+        let mut report: ExecutionReport64 = unsafe { std::mem::zeroed() };
+        let rc = unsafe { sys::awp_zig_mock_matcher_pop_report(self.handle, &mut report) };
+        if rc == 0 {
+            Some(report)
+        } else {
+            None
+        }
+    }
+
+    /// Get total count of matched orders
+    pub fn matched_count(&self) -> u64 {
+        unsafe { sys::awp_zig_mock_matcher_get_matched_count(self.handle) }
+    }
+}
+
+impl Drop for MockExchangeMatcher {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                sys::awp_zig_mock_matcher_destroy(self.handle);
+            }
+            self.handle = ptr::null_mut();
+        }
+    }
+}
+

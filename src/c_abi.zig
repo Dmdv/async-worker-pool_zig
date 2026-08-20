@@ -766,8 +766,14 @@ pub const DynamicReactor = struct {
     audit_ring: ?*DynamicSpscRing(root.OrderSignal64),
     telemetry_ring: ?*DynamicSpscRing(root.OrderSignal64),
 
+    net_pos_raw: std.atomic.Value(u64) align(64),
+    total_fill_qty_raw: std.atomic.Value(u64),
+    total_fill_notional_raw: std.atomic.Value(u64),
+    acked_orders: std.atomic.Value(u64) align(64),
+
     pub fn init(allocator: std.mem.Allocator) !*DynamicReactor {
         const self = try allocator.create(DynamicReactor);
+        const zero_f64: u64 = @bitCast(@as(f64, 0.0));
         self.* = .{
             .allocator = allocator,
             .best_bid_price = 0,
@@ -782,12 +788,37 @@ pub const DynamicReactor = struct {
             .risk_ring = null,
             .audit_ring = null,
             .telemetry_ring = null,
+            .net_pos_raw = std.atomic.Value(u64).init(zero_f64),
+            .total_fill_qty_raw = std.atomic.Value(u64).init(zero_f64),
+            .total_fill_notional_raw = std.atomic.Value(u64).init(zero_f64),
+            .acked_orders = std.atomic.Value(u64).init(0),
         };
         return self;
     }
 
     pub fn deinit(self: *DynamicReactor) void {
         self.allocator.destroy(self);
+    }
+
+    pub inline fn onExecutionReport(self: *DynamicReactor, report: root.ExecutionReport64) void {
+        _ = self.acked_orders.fetchAdd(1, .monotonic);
+        if (report.status == .Filled or report.status == .PartiallyFilled) {
+            const cur_qty: f64 = @bitCast(self.total_fill_qty_raw.load(.monotonic));
+            self.total_fill_qty_raw.store(@bitCast(cur_qty + report.fill_qty), .release);
+
+            const cur_notional: f64 = @bitCast(self.total_fill_notional_raw.load(.monotonic));
+            self.total_fill_notional_raw.store(@bitCast(cur_notional + report.fill_price * report.fill_qty), .release);
+
+            if (report.fill_qty > 0 and report.symbol_id != 0) {
+                var cur_pos: f64 = @bitCast(self.net_pos_raw.load(.monotonic));
+                if (report.side == 0) {
+                    cur_pos += report.fill_qty;
+                } else {
+                    cur_pos -= report.fill_qty;
+                }
+                self.net_pos_raw.store(@bitCast(cur_pos), .release);
+            }
+        }
     }
 
     pub inline fn processTickWithTs(
@@ -1176,4 +1207,197 @@ pub export fn awp_zig_offpath_get_processed(
     if (out_risk) |p| p.* = offpath.risk_processed.load(.acquire);
     if (out_audit) |p| p.* = offpath.audit_processed.load(.acquire);
     if (out_telemetry) |p| p.* = offpath.telemetry_processed.load(.acquire);
+}
+
+pub export fn awp_zig_reactor_on_execution(reactor_ptr: ?*anyopaque, report: ?*const root.ExecutionReport64) callconv(.c) c_int {
+    if (reactor_ptr == null or report == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    reactor.onExecutionReport(report.?.*);
+    return 0;
+}
+
+pub export fn awp_zig_reactor_get_position(
+    reactor_ptr: ?*anyopaque,
+    out_pos: ?*f64,
+    out_notional: ?*f64,
+    out_acked: ?*u64,
+) callconv(.c) c_int {
+    if (reactor_ptr == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    if (out_pos) |p| p.* = @bitCast(reactor.net_pos_raw.load(.acquire));
+    if (out_notional) |n| n.* = @bitCast(reactor.total_fill_notional_raw.load(.acquire));
+    if (out_acked) |a| a.* = reactor.acked_orders.load(.acquire);
+    return 0;
+}
+
+// -----------------------------------------------------------------------------------------
+// Phase 5: Simulated In-Memory Mock Matching Engine C ABI
+// -----------------------------------------------------------------------------------------
+
+pub const DynamicMockMatcher = struct {
+    allocator: std.mem.Allocator,
+    in_ring: DynamicSpscRing(root.OrderSignal64),
+    out_ring: DynamicSpscRing(root.ExecutionReport64),
+    running: std.atomic.Value(bool) align(64),
+    matched_orders: std.atomic.Value(u64) align(64),
+    thread: ?std.Thread = null,
+    next_exec_id: u64 align(64) = 1,
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !*DynamicMockMatcher {
+        if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return error.InvalidCapacity;
+        const self = try allocator.create(DynamicMockMatcher);
+        errdefer allocator.destroy(self);
+
+        var in_r = try DynamicSpscRing(root.OrderSignal64).init(allocator, capacity);
+        errdefer in_r.deinit();
+
+        var out_r = try DynamicSpscRing(root.ExecutionReport64).init(allocator, capacity);
+        errdefer out_r.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .in_ring = in_r,
+            .out_ring = out_r,
+            .running = std.atomic.Value(bool).init(false),
+            .matched_orders = std.atomic.Value(u64).init(0),
+            .thread = null,
+            .next_exec_id = 1,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *DynamicMockMatcher) void {
+        self.stop();
+        self.out_ring.deinit();
+        self.in_ring.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn start(self: *DynamicMockMatcher) !void {
+        if (self.running.swap(true, .acq_rel)) return;
+        errdefer self.stop();
+        self.thread = try std.Thread.spawn(.{}, workerLoop, .{self});
+    }
+
+    pub fn stop(self: *DynamicMockMatcher) void {
+        if (!self.running.swap(false, .acq_rel)) return;
+        if (self.thread) |t| {
+            t.join();
+            self.thread = null;
+        }
+    }
+
+    fn workerLoop(self: *DynamicMockMatcher) void {
+        root.pinToPerformanceCores();
+        while (self.running.load(.acquire)) {
+            var processed = false;
+            while (self.in_ring.popValue()) |order| {
+                processed = true;
+                self.processOrderInPlace(order);
+            }
+            if (!processed) {
+                std.atomic.spinLoopHint();
+            }
+        }
+        while (self.in_ring.popValue()) |order| {
+            self.processOrderInPlace(order);
+        }
+    }
+
+    pub inline fn processOrderInPlace(self: *DynamicMockMatcher, order: root.OrderSignal64) void {
+        const match_ts = root.nowNs();
+        const exec_id = self.next_exec_id;
+        self.next_exec_id +%= 1;
+
+        var status: root.ExecStatus = .Filled;
+        var fill_qty = order.qty;
+        var leaves_qty: f64 = 0;
+
+        if (order.action == 2 or ((order.flags & 0x01) != 0 and order.price <= 0)) {
+            status = root.ExecStatus.Canceled;
+            fill_qty = 0;
+            leaves_qty = 0;
+        }
+
+        const report = root.ExecutionReport64{
+            .timestamp_ns = root.nowNs(),
+            .order_id = order.order_id,
+            .exec_id = exec_id,
+            .fill_price = order.price,
+            .fill_qty = fill_qty,
+            .leaves_qty = leaves_qty,
+            .match_ts_ns = match_ts,
+            .symbol_id = order.symbol_id,
+            .status = status,
+            .side = @truncate(order.side),
+            ._pad = 0,
+        };
+
+        while (true) {
+            if (self.out_ring.claim()) |slot| {
+                slot.* = report;
+                self.out_ring.commit();
+                _ = self.matched_orders.fetchAdd(1, .monotonic);
+                break;
+            }
+            if (!self.running.load(.acquire)) break;
+            std.atomic.spinLoopHint();
+        }
+    }
+};
+
+pub export fn awp_zig_mock_matcher_create(capacity: usize, out_matcher: ?*?*anyopaque) callconv(.c) c_int {
+    if (out_matcher == null) return -22;
+    if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return -22;
+    const matcher = DynamicMockMatcher.init(std.heap.c_allocator, capacity) catch return -12;
+    out_matcher.?.* = @ptrCast(matcher);
+    return 0;
+}
+
+pub export fn awp_zig_mock_matcher_start(matcher_ptr: ?*anyopaque) callconv(.c) c_int {
+    if (matcher_ptr == null) return -22;
+    const matcher: *DynamicMockMatcher = @ptrCast(@alignCast(matcher_ptr.?));
+    matcher.start() catch return -12;
+    return 0;
+}
+
+pub export fn awp_zig_mock_matcher_stop(matcher_ptr: ?*anyopaque) callconv(.c) void {
+    if (matcher_ptr) |ptr| {
+        const matcher: *DynamicMockMatcher = @ptrCast(@alignCast(ptr));
+        matcher.stop();
+    }
+}
+
+pub export fn awp_zig_mock_matcher_destroy(matcher_ptr: ?*anyopaque) callconv(.c) void {
+    if (matcher_ptr) |ptr| {
+        const matcher: *DynamicMockMatcher = @ptrCast(@alignCast(ptr));
+        matcher.deinit();
+    }
+}
+
+pub export fn awp_zig_mock_matcher_push_order(matcher_ptr: ?*anyopaque, order: ?*const root.OrderSignal64) callconv(.c) c_int {
+    if (matcher_ptr == null or order == null) return -22;
+    const matcher: *DynamicMockMatcher = @ptrCast(@alignCast(matcher_ptr.?));
+    if (matcher.in_ring.claim()) |slot| {
+        slot.* = order.?.*;
+        matcher.in_ring.commit();
+        return 0;
+    }
+    return 1; // Queue full
+}
+
+pub export fn awp_zig_mock_matcher_pop_report(matcher_ptr: ?*anyopaque, out_report: ?*root.ExecutionReport64) callconv(.c) c_int {
+    if (matcher_ptr == null or out_report == null) return -22;
+    const matcher: *DynamicMockMatcher = @ptrCast(@alignCast(matcher_ptr.?));
+    if (matcher.out_ring.popValue()) |rep| {
+        out_report.?.* = rep;
+        return 0;
+    }
+    return 1; // Queue empty
+}
+
+pub export fn awp_zig_mock_matcher_get_matched_count(matcher_ptr: ?*anyopaque) callconv(.c) u64 {
+    if (matcher_ptr == null) return 0;
+    const matcher: *DynamicMockMatcher = @ptrCast(@alignCast(matcher_ptr.?));
+    return matcher.matched_orders.load(.acquire);
 }

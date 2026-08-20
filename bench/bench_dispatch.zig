@@ -501,6 +501,153 @@ pub fn main() !void {
         reactor.getOverrunCount(),
     });
 
+    // -------------------------------------------------------------------------------------
+    // Section 8: End-to-End Full-Loop Trading Engine Benchmark (Tick-to-Execution)
+    // -------------------------------------------------------------------------------------
+    std.debug.print("=== Zig 0.16 End-to-End Full-Loop Trading Engine (Tick-to-Execution) ===\n", .{});
+    const E2E_TICKS: usize = 1_000_000;
+
+    var mock_matcher = try awp.MockExchangeMatcher(4096).init(backing_allocator);
+    defer mock_matcher.deinit(backing_allocator);
+    try mock_matcher.start();
+
+    var e2e_reactor = awp.TradingReactor(4096).init();
+
+    var t2o_lats = try backing_allocator.alloc(u64, E2E_TICKS);
+    defer backing_allocator.free(t2o_lats);
+    var o2w_lats = try backing_allocator.alloc(u64, E2E_TICKS);
+    defer backing_allocator.free(o2w_lats);
+    var w2a_lats = try backing_allocator.alloc(u64, E2E_TICKS);
+    defer backing_allocator.free(w2a_lats);
+    var e2e_roundtrip_lats = try backing_allocator.alloc(u64, E2E_TICKS);
+    defer backing_allocator.free(e2e_roundtrip_lats);
+
+    var e2e_update = awp.BookUpdate64{
+        .timestamp_ns = 0,
+        .seq = 0,
+        .symbol_id = 1,
+        .flags = 0x01,
+        .bid_price = 65000.0,
+        .bid_qty = 1.5,
+        .ask_price = 65000.5,
+        .ask_qty = 2.0,
+    };
+
+    var e2e_wire_encoder: awp.WireOrderFrame = .{};
+
+    var e2e_signals_generated: usize = 0;
+    var total_t2o: u64 = 0;
+    var total_o2w: u64 = 0;
+    var total_w2a: u64 = 0;
+    var total_e2e: u64 = 0;
+
+    const e2e_t_start = awp.nowNs();
+
+    for (0..E2E_TICKS) |i| {
+        const s0 = awp.nowNs();
+        e2e_update.timestamp_ns = s0;
+        e2e_update.seq = i + 1;
+        e2e_update.bid_price = 65000.0 + @as(f64, @floatFromInt(i % 100)) * 0.1;
+        e2e_update.ask_price = e2e_update.bid_price + 0.5;
+
+        if (e2e_reactor.processTickWithTs(e2e_update, s0)) |sig| {
+            const s1 = awp.nowNs();
+
+            // Segment C: Wire Serialization
+            e2e_wire_encoder.seq = @truncate(i);
+            e2e_wire_encoder.timestamp_ns = s1;
+            e2e_wire_encoder.order_id = sig.order_id;
+            e2e_wire_encoder.price = sig.price;
+            e2e_wire_encoder.qty = sig.qty;
+            e2e_wire_encoder.symbol_id = sig.symbol_id;
+            e2e_wire_encoder.side = sig.side;
+            e2e_wire_encoder.action = sig.action;
+            e2e_wire_encoder.flags = sig.flags;
+            std.mem.doNotOptimizeAway(&e2e_wire_encoder);
+            const s2 = awp.nowNs();
+
+            // Segment D: Simulated Exchange Match Engine (True Lock-Free Async SPSC Loopback)
+            if (mock_matcher.in_ring.claim()) |slot| {
+                slot.* = sig;
+                mock_matcher.in_ring.commit();
+            }
+
+            while (true) {
+                if (mock_matcher.out_ring.popValue()) |report| {
+                    const s3 = awp.nowNs();
+
+                    // Segment E: Ack Ingestion & State Update
+                    e2e_reactor.onExecutionReport(report);
+                    const s4 = awp.nowNs();
+
+                    const d_t2o = if (s1 >= s0) (s1 - s0) else 0;
+                    const d_o2w = if (s2 >= s1) (s2 - s1) else 0;
+                    const d_w2a = if (s3 >= s2) (s3 - s2) else 0;
+                    const d_e2e = if (s4 >= s0) (s4 - s0) else 0;
+
+                    if (e2e_signals_generated < E2E_TICKS) {
+                        t2o_lats[e2e_signals_generated] = d_t2o;
+                        o2w_lats[e2e_signals_generated] = d_o2w;
+                        w2a_lats[e2e_signals_generated] = d_w2a;
+                        e2e_roundtrip_lats[e2e_signals_generated] = d_e2e;
+                    }
+
+                    total_t2o +%= d_t2o;
+                    total_o2w +%= d_o2w;
+                    total_w2a +%= d_w2a;
+                    total_e2e +%= d_e2e;
+
+                    e2e_signals_generated += 1;
+                    break;
+                }
+                std.atomic.spinLoopHint();
+            }
+        }
+    }
+
+    const e2e_t_end = awp.nowNs();
+    mock_matcher.stop();
+
+    const e2e_duration_ns = @as(f64, @floatFromInt(e2e_t_end - e2e_t_start));
+    const e2e_duration_sec = e2e_duration_ns / 1_000_000_000.0;
+    const e2e_throughput = @as(f64, @floatFromInt(E2E_TICKS)) / e2e_duration_sec;
+
+    std.mem.sort(u64, t2o_lats[0..e2e_signals_generated], {}, std.sort.asc(u64));
+    std.mem.sort(u64, o2w_lats[0..e2e_signals_generated], {}, std.sort.asc(u64));
+    std.mem.sort(u64, w2a_lats[0..e2e_signals_generated], {}, std.sort.asc(u64));
+    std.mem.sort(u64, e2e_roundtrip_lats[0..e2e_signals_generated], {}, std.sort.asc(u64));
+
+    const e2e_count_f = @as(f64, @floatFromInt(e2e_signals_generated));
+    const t2o_mean = @as(f64, @floatFromInt(total_t2o)) / e2e_count_f;
+    const o2w_mean = @as(f64, @floatFromInt(total_o2w)) / e2e_count_f;
+    const w2a_mean = @as(f64, @floatFromInt(total_w2a)) / e2e_count_f;
+    const e2e_mean = @as(f64, @floatFromInt(total_e2e)) / e2e_count_f;
+
+    const t2o_p50 = t2o_lats[e2e_signals_generated * 50 / 100];
+    const t2o_p99 = t2o_lats[e2e_signals_generated * 99 / 100];
+    const o2w_p50 = o2w_lats[e2e_signals_generated * 50 / 100];
+    const o2w_p99 = o2w_lats[e2e_signals_generated * 99 / 100];
+    const w2a_p50 = w2a_lats[e2e_signals_generated * 50 / 100];
+    const w2a_p99 = w2a_lats[e2e_signals_generated * 99 / 100];
+    const e2e_p50 = e2e_roundtrip_lats[e2e_signals_generated * 50 / 100];
+    const e2e_p99 = e2e_roundtrip_lats[e2e_signals_generated * 99 / 100];
+    const e2e_p999 = e2e_roundtrip_lats[e2e_signals_generated * 999 / 1000];
+    const e2e_p9999 = e2e_roundtrip_lats[e2e_signals_generated * 9999 / 10000];
+    const e2e_max = e2e_roundtrip_lats[e2e_signals_generated - 1];
+
+    std.debug.print("E2E Full-Loop Throughput: {d:.2} M ops/sec\n", .{e2e_throughput / 1e6});
+    std.debug.print("  Tick-to-Order (t2o)  : Mean={d:.2} ns | p50={d} ns | p99={d} ns\n", .{ t2o_mean, t2o_p50, t2o_p99 });
+    std.debug.print("  Order-to-Wire (o2w)  : Mean={d:.2} ns | p50={d} ns | p99={d} ns\n", .{ o2w_mean, o2w_p50, o2w_p99 });
+    std.debug.print("  Wire-to-Ack   (w2a)  : Mean={d:.2} ns | p50={d} ns | p99={d} ns\n", .{ w2a_mean, w2a_p50, w2a_p99 });
+    std.debug.print("  E2E Round-Trip(e2e)  : Mean={d:.2} ns | p50={d} ns | p99={d} ns | p99.99={d} ns | Max={d} ns\n", .{
+        e2e_mean, e2e_p50, e2e_p99, e2e_p9999, e2e_max,
+    });
+    std.debug.print("  Portfolio Position   : Fills={d} | NetPos={d:.2} | Notional={d:.2}\n\n", .{
+        e2e_reactor.getAckedOrders(),
+        e2e_reactor.getNetPosition(),
+        e2e_reactor.total_fill_notional,
+    });
+
     var json_path: ?[]const u8 = null;
     const env_val = c_stdio.getenv("BENCH_JSON_OUT");
     if (env_val != null) {
@@ -508,8 +655,8 @@ pub fn main() !void {
     }
 
     if (json_path) |path| {
-        var buf: [2048]u8 = undefined;
-        const json_content = try std.fmt.bufPrint(&buf,
+        var buf1: [2048]u8 = undefined;
+        const part1 = try std.fmt.bufPrint(&buf1,
             \\{{
             \\  "engine": "zig-0.16",
             \\  "num_messages": {d},
@@ -531,9 +678,7 @@ pub fn main() !void {
             \\  "bip_throughput_mops": {d:.2},
             \\  "bip_mean_ns": {d:.2},
             \\  "reactor_throughput_mps": {d:.2},
-            \\  "reactor_mean_ns": {d:.2}
-            \\}}
-            \\
+            \\  "reactor_mean_ns": {d:.2},
         , .{
             NUM_MSGS,
             NUM_WORKERS,
@@ -556,12 +701,54 @@ pub fn main() !void {
             reactor_throughput / 1e6,
             reactor_service_time,
         });
+
+        var buf2: [2048]u8 = undefined;
+        const part2 = try std.fmt.bufPrint(&buf2,
+            \\
+            \\  "e2e_throughput_mps": {d:.2},
+            \\  "e2e_t2o_mean_ns": {d:.2},
+            \\  "e2e_t2o_p50_ns": {d},
+            \\  "e2e_t2o_p99_ns": {d},
+            \\  "e2e_o2w_mean_ns": {d:.2},
+            \\  "e2e_o2w_p50_ns": {d},
+            \\  "e2e_o2w_p99_ns": {d},
+            \\  "e2e_w2a_mean_ns": {d:.2},
+            \\  "e2e_w2a_p50_ns": {d},
+            \\  "e2e_w2a_p99_ns": {d},
+            \\  "e2e_roundtrip_mean_ns": {d:.2},
+            \\  "e2e_roundtrip_p50_ns": {d},
+            \\  "e2e_roundtrip_p99_ns": {d},
+            \\  "e2e_roundtrip_p999_ns": {d},
+            \\  "e2e_roundtrip_p9999_ns": {d},
+            \\  "e2e_roundtrip_max_ns": {d}
+            \\}}
+            \\
+        , .{
+            e2e_throughput / 1e6,
+            t2o_mean,
+            t2o_p50,
+            t2o_p99,
+            o2w_mean,
+            o2w_p50,
+            o2w_p99,
+            w2a_mean,
+            w2a_p50,
+            w2a_p99,
+            e2e_mean,
+            e2e_p50,
+            e2e_p99,
+            e2e_p999,
+            e2e_p9999,
+            e2e_max,
+        });
+
         var path_z: [1024:0]u8 = undefined;
         @memcpy(path_z[0..path.len], path);
         path_z[path.len] = 0;
         const f = c_stdio.fopen(&path_z, "wb");
         if (f != null) {
-            _ = c_stdio.fwrite(json_content.ptr, 1, json_content.len, f);
+            _ = c_stdio.fwrite(part1.ptr, 1, part1.len, f);
+            _ = c_stdio.fwrite(part2.ptr, 1, part2.len, f);
             _ = c_stdio.fclose(f);
             std.debug.print("✓ Saved benchmark JSON metrics to: {s}\n\n", .{path});
         }

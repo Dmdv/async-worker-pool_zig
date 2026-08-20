@@ -65,6 +65,34 @@ pub struct OrderSignal64 {
     pub _reserved: [u8; 8],
 }
 
+/// Execution Status Enum for Trade Reports and Order Lifecycle
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecStatus {
+    New = 0,
+    PartiallyFilled = 1,
+    Filled = 2,
+    Canceled = 3,
+    Rejected = 4,
+}
+
+/// 64-Byte Cache-Line Aligned Execution Report / Trade Confirmation (Zero-Copy POD)
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecutionReport64 {
+    pub timestamp_ns: u64,
+    pub order_id: u64,
+    pub exec_id: u64,
+    pub fill_price: f64,
+    pub fill_qty: f64,
+    pub leaves_qty: f64,
+    pub match_ts_ns: u64,
+    pub symbol_id: u32,
+    pub status: ExecStatus,
+    pub side: u8,
+    pub _pad: u16,
+}
+
 #[repr(C)]
 pub struct AwpClaim {
     pub frame: *mut AwpFrame,
@@ -154,6 +182,13 @@ extern "C" {
     pub fn awp_zig_reactor_bind_audit_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
     pub fn awp_zig_reactor_bind_telemetry_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
     pub fn awp_zig_reactor_get_overruns(reactor: *mut c_void) -> u64;
+    pub fn awp_zig_reactor_on_execution(reactor: *mut c_void, report: *const ExecutionReport64) -> c_int;
+    pub fn awp_zig_reactor_get_position(
+        reactor: *mut c_void,
+        out_pos: *mut f64,
+        out_notional: *mut f64,
+        out_acked: *mut u64,
+    ) -> c_int;
 
     pub fn awp_zig_offpath_create(capacity: usize, out_offpath: *mut *mut c_void) -> c_int;
     pub fn awp_zig_offpath_start(offpath: *mut c_void) -> c_int;
@@ -168,6 +203,14 @@ extern "C" {
         out_audit: *mut u64,
         out_telemetry: *mut u64,
     );
+
+    pub fn awp_zig_mock_matcher_create(capacity: usize, out_matcher: *mut *mut c_void) -> c_int;
+    pub fn awp_zig_mock_matcher_start(matcher: *mut c_void) -> c_int;
+    pub fn awp_zig_mock_matcher_stop(matcher: *mut c_void);
+    pub fn awp_zig_mock_matcher_destroy(matcher: *mut c_void);
+    pub fn awp_zig_mock_matcher_push_order(matcher: *mut c_void, order: *const OrderSignal64) -> c_int;
+    pub fn awp_zig_mock_matcher_pop_report(matcher: *mut c_void, out_report: *mut ExecutionReport64) -> c_int;
+    pub fn awp_zig_mock_matcher_get_matched_count(matcher: *mut c_void) -> u64;
 }
 
 const _: () = {
@@ -177,6 +220,8 @@ const _: () = {
     assert!(std::mem::align_of::<Trade64>() == 64);
     assert!(std::mem::size_of::<OrderSignal64>() == 64);
     assert!(std::mem::align_of::<OrderSignal64>() == 64);
+    assert!(std::mem::size_of::<ExecutionReport64>() == 64);
+    assert!(std::mem::align_of::<ExecutionReport64>() == 64);
     assert!(std::mem::size_of::<PacketDescriptor>() == 16);
     assert!(std::mem::align_of::<PacketDescriptor>() == 8);
 
@@ -190,4 +235,16 @@ const _: () = {
     assert!(core::mem::offset_of!(OrderSignal64, action) == 48);
     assert!(core::mem::offset_of!(OrderSignal64, flags) == 52);
     assert!(core::mem::offset_of!(OrderSignal64, _reserved) == 56);
+
+    assert!(core::mem::offset_of!(ExecutionReport64, timestamp_ns) == 0);
+    assert!(core::mem::offset_of!(ExecutionReport64, order_id) == 8);
+    assert!(core::mem::offset_of!(ExecutionReport64, exec_id) == 16);
+    assert!(core::mem::offset_of!(ExecutionReport64, fill_price) == 24);
+    assert!(core::mem::offset_of!(ExecutionReport64, fill_qty) == 32);
+    assert!(core::mem::offset_of!(ExecutionReport64, leaves_qty) == 40);
+    assert!(core::mem::offset_of!(ExecutionReport64, match_ts_ns) == 48);
+    assert!(core::mem::offset_of!(ExecutionReport64, symbol_id) == 56);
+    assert!(core::mem::offset_of!(ExecutionReport64, status) == 60);
+    assert!(core::mem::offset_of!(ExecutionReport64, side) == 61);
+    assert!(core::mem::offset_of!(ExecutionReport64, _pad) == 62);
 };
