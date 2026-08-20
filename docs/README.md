@@ -51,10 +51,11 @@ AWP provides three specialized, complementary architectural primitives designed 
 
 ### Safe Rust FFI Abstractions (`awp-zig-rs`)
 
-All three primitives are fully exposed and memory-safe in Rust:
-1. `awp_zig_rs::BipRing` / `awp_zig_rs::BipBuffer` (with RAII `PacketView` zero-copy lifetime guards)
-2. `awp_zig_rs::Spsc64Ring` / `BookUpdate64` / `Trade64`
-3. `awp_zig_rs::WorkerPool`
+All core primitives are fully exposed and memory-safe in Rust:
+1. `awp_zig_rs::TradingReactor` & `awp_zig_rs::OffPathPipeline` (Phase 4 Fast-Path Reactor & Off-Path Worker Pipeline)
+2. `awp_zig_rs::BipRing` / `awp_zig_rs::BipBuffer` (with RAII `PacketView` zero-copy lifetime guards)
+3. `awp_zig_rs::Spsc64Ring` / `BookUpdate64` / `Trade64` / `OrderSignal64`
+4. `awp_zig_rs::WorkerPool`
 
 ---
 
@@ -73,6 +74,7 @@ All three primitives are fully exposed and memory-safe in Rust:
 - [**Getting Started**](getting-started/quickstart.md) — Quickstart guides for Zig and Rust.
 - [**System Architecture**](architecture/overview.md) — Core dataflow and component interaction.
 - [**Zero-Copy Memory Models**](architecture/memory-models.md) — Memory topologies and cacheline layouts.
+- [**Hybrid Trading Reactor**](primitives/trading-reactor.md) — Fast-path execution & non-blocking off-path worker pipeline.
 - [**SPSC Ring Buffers**](primitives/spsc-ring.md) — Deep dive into 8B and 64B lock-free queues.
 - [**Bipartite Buffer & BipRing**](primitives/bip-buffer.md) — Simon Cooke bipartite streaming algorithm.
 - [**Worker Pool & SIMD**](primitives/worker-pool.md) — Multi-threaded execution and SIMD dispatch.

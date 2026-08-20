@@ -46,6 +46,15 @@ pub inline fn nowNs() u64 {
     return @as(u64, @intCast(ts.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(ts.tv_nsec));
 }
 
+/// Nanosecond sleep helper using POSIX nanosleep
+pub inline fn sleepNs(ns: u64) void {
+    const req = c_time.struct_timespec{
+        .tv_sec = @intCast(ns / 1_000_000_000),
+        .tv_nsec = @intCast(ns % 1_000_000_000),
+    };
+    _ = c_time.nanosleep(&req, null);
+}
+
 /// Pin current thread to Apple Silicon P-Core (Performance Core)
 pub fn pinToPerformanceCores() void {
     if (@import("builtin").os.tag == .macos) {
@@ -205,6 +214,35 @@ comptime {
     std.debug.assert(@offsetOf(Trade64, "flags") == 40);
     std.debug.assert(@offsetOf(Trade64, "taker_order_id") == 44);
     std.debug.assert(@offsetOf(Trade64, "_reserved") == 48);
+}
+
+/// 64-Byte Cache-Line Aligned Financial Order Execution Signal (Zero-Copy POD)
+pub const OrderSignal64 = extern struct {
+    timestamp_ns: u64 align(64) = 0, // 8B: Monotonic signal generation timestamp (forces 64B struct alignment)
+    ingress_ts_ns: u64 = 0, // 8B: Ingress market data tick timestamp
+    order_id: u64 = 0, // 8B: Unique client/strategy order ID
+    price: f64 = 0, // 8B: Limit order execution price
+    qty: f64 = 0, // 8B: Order quantity in lots
+    symbol_id: u32 = 0, // 4B: Integer ticker identifier
+    side: u32 = 0, // 4B: Side (0 = Buy, 1 = Sell)
+    action: u32 = 0, // 4B: Action (1 = New, 2 = Cancel, 3 = Replace)
+    flags: u32 = 0, // 4B: Execution flags (0x01 = IOC, 0x02 = PostOnly)
+    _reserved: [8]u8 = [_]u8{0} ** 8, // 8B: Padding to exactly 64B (1 Cache Line)
+};
+
+comptime {
+    std.debug.assert(@sizeOf(OrderSignal64) == 64);
+    std.debug.assert(@alignOf(OrderSignal64) == 64);
+    std.debug.assert(@offsetOf(OrderSignal64, "timestamp_ns") == 0);
+    std.debug.assert(@offsetOf(OrderSignal64, "ingress_ts_ns") == 8);
+    std.debug.assert(@offsetOf(OrderSignal64, "order_id") == 16);
+    std.debug.assert(@offsetOf(OrderSignal64, "price") == 24);
+    std.debug.assert(@offsetOf(OrderSignal64, "qty") == 32);
+    std.debug.assert(@offsetOf(OrderSignal64, "symbol_id") == 40);
+    std.debug.assert(@offsetOf(OrderSignal64, "side") == 44);
+    std.debug.assert(@offsetOf(OrderSignal64, "action") == 48);
+    std.debug.assert(@offsetOf(OrderSignal64, "flags") == 52);
+    std.debug.assert(@offsetOf(OrderSignal64, "_reserved") == 56);
 }
 
 /// Ultra-Fast Cache-Optimized Single-Producer Single-Consumer (SPSC) Ring Buffer
@@ -532,6 +570,25 @@ pub fn LockFreeRing(comptime capacity: usize) type {
             }
         }
 
+        pub inline fn processOne(self: *Self, callback: *const fn (*const Frame) void) bool {
+            const pos = self.dequeue_pos.load(.monotonic);
+            const cell = &self.cells[pos & mask];
+            const seq = cell.sequence.load(.acquire);
+            const dif: isize = @as(isize, @bitCast(seq)) - @as(isize, @bitCast(pos + 1));
+
+            if (dif == 0) {
+                self.dequeue_pos.store(pos + 1, .monotonic);
+                const data = &self.frames[pos & mask];
+                @prefetch(&self.frames[(pos + PREFETCH_DISTANCE) & mask], .{ .rw = .read, .locality = 3, .cache = .data });
+                callback(data);
+                cell.sequence.store(pos + capacity, .release);
+                return true;
+            } else {
+                @branchHint(.unlikely);
+                return false;
+            }
+        }
+
         pub inline fn tryPop(self: *Self) ?*Frame {
             const pos = self.dequeue_pos.load(.monotonic);
             const cell = &self.cells[pos & mask];
@@ -596,17 +653,13 @@ pub fn AwpPool(comptime num_workers: usize, comptime queue_capacity: usize) type
             const ring = &self.rings[worker_id];
 
             while (self.running.load(.acquire)) {
-                if (ring.tryPop()) |frame| {
-                    callback(frame);
-                } else {
+                if (!ring.processOne(callback)) {
                     std.atomic.spinLoopHint();
                 }
             }
 
-            // Drain remaining frames
-            while (ring.tryPop()) |frame| {
-                callback(frame);
-            }
+            // Drain remaining frames safely executing callback before releasing sequence
+            while (ring.processOne(callback)) {}
         }
 
         pub inline fn claim(self: *Self, shard: u32) ?Claim {
@@ -986,6 +1039,283 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
     };
 }
 
+/// Single-Threaded Trading Reactor Core (Critical Fast-Path)
+/// Runs on a dedicated pinned Performance Core with Zero Syscalls and Zero Inter-Core Mutex Contention.
+/// Evaluates market ticks and fans out signals to Off-Path Worker Rings without ever blocking or stalling.
+pub fn TradingReactor(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        pub const SignalRing = SpscRing(OrderSignal64, capacity);
+
+        best_bid_price: f64 = 0,
+        best_ask_price: f64 = 0,
+        best_bid_qty: f64 = 0,
+        best_ask_qty: f64 = 0,
+        last_seq: u64 = 0,
+        next_order_id: u64 = 1,
+        processed_ticks: u64 = 0,
+        generated_signals: u64 = 0,
+        overrun_count: std.atomic.Value(u64) align(64) = std.atomic.Value(u64).init(0),
+
+        risk_ring: ?*SignalRing align(64) = null,
+        audit_ring: ?*SignalRing = null,
+        telemetry_ring: ?*SignalRing = null,
+
+        pub fn init() Self {
+            return Self{};
+        }
+
+        pub fn bindRiskRing(self: *Self, ring: ?*SignalRing) void {
+            self.risk_ring = ring;
+        }
+
+        pub fn bindAuditRing(self: *Self, ring: ?*SignalRing) void {
+            self.audit_ring = ring;
+        }
+
+        pub fn bindTelemetryRing(self: *Self, ring: ?*SignalRing) void {
+            self.telemetry_ring = ring;
+        }
+
+        /// Process a 64-byte market data tick on the Fast-Path Core (Zero Syscalls, Zero Locks)
+        pub inline fn processTick(self: *Self, update: BookUpdate64) ?OrderSignal64 {
+            self.processed_ticks += 1;
+            self.best_bid_price = update.bid_price;
+            self.best_ask_price = update.ask_price;
+            self.best_bid_qty = update.bid_qty;
+            self.best_ask_qty = update.ask_qty;
+            self.last_seq = update.seq;
+
+            // Simple fast-path rule: if valid bid/ask spread, quote at best bid
+            if (update.ask_price > update.bid_price and update.bid_price > 0) {
+                const signal = OrderSignal64{
+                    .timestamp_ns = nowNs(),
+                    .ingress_ts_ns = update.timestamp_ns,
+                    .order_id = self.next_order_id,
+                    .symbol_id = update.symbol_id,
+                    .side = 0, // Buy
+                    .price = update.bid_price,
+                    .qty = update.bid_qty,
+                    .action = 1, // New
+                    .flags = 0x02, // PostOnly
+                    ._reserved = [_]u8{0} ** 8,
+                };
+                self.next_order_id +%= 1;
+                self.generated_signals += 1;
+
+                self.fanOutNonBlocking(signal);
+                return signal;
+            }
+            return null;
+        }
+
+        inline fn fanOutNonBlocking(self: *Self, signal: OrderSignal64) void {
+            if (self.risk_ring) |r| {
+                if (r.claim()) |slot| {
+                    slot.* = signal;
+                    r.commit();
+                } else {
+                    _ = self.overrun_count.fetchAdd(1, .monotonic);
+                }
+            }
+            if (self.audit_ring) |r| {
+                if (r.claim()) |slot| {
+                    slot.* = signal;
+                    r.commit();
+                } else {
+                    _ = self.overrun_count.fetchAdd(1, .monotonic);
+                }
+            }
+            if (self.telemetry_ring) |r| {
+                if (r.claim()) |slot| {
+                    slot.* = signal;
+                    r.commit();
+                } else {
+                    _ = self.overrun_count.fetchAdd(1, .monotonic);
+                }
+            }
+        }
+
+        pub inline fn getOverrunCount(self: *const Self) u64 {
+            return self.overrun_count.load(.acquire);
+        }
+    };
+}
+
+/// Asynchronous Off-Path Worker Pipeline
+/// Manages dedicated background threads for Risk validation, Binary Audit Logging, and Telemetry Histograms.
+pub const OffPathPipeline = struct {
+    pub const QUEUE_CAP: usize = 4096;
+    pub const SignalQueue = SpscRing(OrderSignal64, QUEUE_CAP);
+
+    allocator: std.mem.Allocator,
+    risk_ring: SignalQueue,
+    audit_ring: SignalQueue,
+    telemetry_ring: SignalQueue,
+
+    running: std.atomic.Value(bool) align(64),
+    risk_processed: std.atomic.Value(u64) align(64),
+    audit_processed: std.atomic.Value(u64) align(64),
+    telemetry_processed: std.atomic.Value(u64) align(64),
+    total_latency_ns: std.atomic.Value(u64) align(64),
+
+    risk_thread: ?std.Thread = null,
+    audit_thread: ?std.Thread = null,
+    telemetry_thread: ?std.Thread = null,
+
+    pub fn init(allocator: std.mem.Allocator) !*OffPathPipeline {
+        const self = try allocator.create(OffPathPipeline);
+        errdefer allocator.destroy(self);
+
+        var risk_ring = try SignalQueue.init(allocator);
+        errdefer risk_ring.deinit();
+
+        var audit_ring = try SignalQueue.init(allocator);
+        errdefer audit_ring.deinit();
+
+        var telemetry_ring = try SignalQueue.init(allocator);
+        errdefer telemetry_ring.deinit();
+
+        self.* = .{
+            .allocator = allocator,
+            .risk_ring = risk_ring,
+            .audit_ring = audit_ring,
+            .telemetry_ring = telemetry_ring,
+            .running = std.atomic.Value(bool).init(false),
+            .risk_processed = std.atomic.Value(u64).init(0),
+            .audit_processed = std.atomic.Value(u64).init(0),
+            .telemetry_processed = std.atomic.Value(u64).init(0),
+            .total_latency_ns = std.atomic.Value(u64).init(0),
+            .risk_thread = null,
+            .audit_thread = null,
+            .telemetry_thread = null,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *OffPathPipeline) void {
+        self.stop();
+        self.telemetry_ring.deinit();
+        self.audit_ring.deinit();
+        self.risk_ring.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn start(self: *OffPathPipeline) !void {
+        if (self.running.swap(true, .acq_rel)) return;
+        errdefer self.stop();
+
+        self.risk_thread = try std.Thread.spawn(.{}, riskWorkerLoop, .{self});
+        self.audit_thread = try std.Thread.spawn(.{}, auditWorkerLoop, .{self});
+        self.telemetry_thread = try std.Thread.spawn(.{}, telemetryWorkerLoop, .{self});
+    }
+
+    pub fn stop(self: *OffPathPipeline) void {
+        if (!self.running.swap(false, .acq_rel)) return;
+
+        if (self.risk_thread) |t| {
+            t.join();
+            self.risk_thread = null;
+        }
+        if (self.audit_thread) |t| {
+            t.join();
+            self.audit_thread = null;
+        }
+        if (self.telemetry_thread) |t| {
+            t.join();
+            self.telemetry_thread = null;
+        }
+    }
+
+    fn riskWorkerLoop(self: *OffPathPipeline) void {
+        pinToPerformanceCores();
+        var position: f64 = 0;
+        var notional: f64 = 0;
+        _ = &position;
+        _ = &notional;
+
+        while (self.running.load(.acquire)) {
+            var batch_count: u64 = 0;
+            while (self.risk_ring.popValue()) |sig| {
+                batch_count += 1;
+                if (sig.side == 0) {
+                    position += sig.qty;
+                } else {
+                    position -= sig.qty;
+                }
+                notional += sig.price * sig.qty;
+            }
+            if (batch_count > 0) {
+                _ = self.risk_processed.fetchAdd(batch_count, .monotonic);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        var exit_count: u64 = 0;
+        while (self.risk_ring.popValue()) |_| {
+            exit_count += 1;
+        }
+        if (exit_count > 0) {
+            _ = self.risk_processed.fetchAdd(exit_count, .monotonic);
+        }
+    }
+
+    fn auditWorkerLoop(self: *OffPathPipeline) void {
+        pinToPerformanceCores();
+        var checksum: u64 = 0;
+        _ = &checksum;
+
+        while (self.running.load(.acquire)) {
+            var batch_count: u64 = 0;
+            while (self.audit_ring.popValue()) |sig| {
+                batch_count += 1;
+                checksum +%= sig.order_id ^ sig.timestamp_ns;
+            }
+            if (batch_count > 0) {
+                _ = self.audit_processed.fetchAdd(batch_count, .monotonic);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        var exit_count: u64 = 0;
+        while (self.audit_ring.popValue()) |_| {
+            exit_count += 1;
+        }
+        if (exit_count > 0) {
+            _ = self.audit_processed.fetchAdd(exit_count, .monotonic);
+        }
+    }
+
+    fn telemetryWorkerLoop(self: *OffPathPipeline) void {
+        pinToPerformanceCores();
+        while (self.running.load(.acquire)) {
+            var batch_count: u64 = 0;
+            var batch_lat: u64 = 0;
+            while (self.telemetry_ring.popValue()) |sig| {
+                batch_count += 1;
+                if (sig.timestamp_ns >= sig.ingress_ts_ns) {
+                    batch_lat += (sig.timestamp_ns - sig.ingress_ts_ns);
+                }
+            }
+            if (batch_count > 0) {
+                if (batch_lat > 0) {
+                    _ = self.total_latency_ns.fetchAdd(batch_lat, .monotonic);
+                }
+                _ = self.telemetry_processed.fetchAdd(batch_count, .monotonic);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        var exit_count: u64 = 0;
+        while (self.telemetry_ring.popValue()) |_| {
+            exit_count += 1;
+        }
+        if (exit_count > 0) {
+            _ = self.telemetry_processed.fetchAdd(exit_count, .monotonic);
+        }
+    }
+};
+
 test "SpscRing Frame push pop" {
     var ring = try FrameSpscRing(64).init(std.testing.allocator);
     defer ring.deinit();
@@ -1224,4 +1554,54 @@ test "BipRing variable-length packet streaming" {
     ring.releasePacket(rec3.?.desc);
 
     try std.testing.expect(ring.popPacket() == null);
+}
+
+test "TradingReactor and OffPathPipeline integrated processing" {
+    var pipeline = try OffPathPipeline.init(std.testing.allocator);
+    defer pipeline.deinit();
+
+    try pipeline.start();
+
+    var reactor = TradingReactor(OffPathPipeline.QUEUE_CAP).init();
+    reactor.bindRiskRing(&pipeline.risk_ring);
+    reactor.bindAuditRing(&pipeline.audit_ring);
+    reactor.bindTelemetryRing(&pipeline.telemetry_ring);
+
+    // Send 100 ticks through the reactor
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        const tick = BookUpdate64{
+            .timestamp_ns = nowNs(),
+            .seq = i + 1,
+            .symbol_id = 1,
+            .flags = 0x01,
+            .bid_price = 50000.0 + @as(f64, @floatFromInt(i)),
+            .bid_qty = 2.0,
+            .ask_price = 50001.0 + @as(f64, @floatFromInt(i)),
+            .ask_qty = 3.0,
+        };
+        const sig = reactor.processTick(tick);
+        try std.testing.expect(sig != null);
+        try std.testing.expectEqual(tick.bid_price, sig.?.price);
+        try std.testing.expectEqual(tick.bid_qty, sig.?.qty);
+    }
+
+    try std.testing.expectEqual(@as(u64, 100), reactor.processed_ticks);
+    try std.testing.expectEqual(@as(u64, 100), reactor.generated_signals);
+    try std.testing.expectEqual(@as(u64, 0), reactor.getOverrunCount());
+
+    // Give worker threads time to process
+    var attempts: usize = 0;
+    while ((pipeline.risk_processed.load(.acquire) < 100 or
+        pipeline.audit_processed.load(.acquire) < 100 or
+        pipeline.telemetry_processed.load(.acquire) < 100) and attempts < 1000) : (attempts += 1)
+    {
+        sleepNs(100_000);
+    }
+
+    pipeline.stop();
+
+    try std.testing.expectEqual(@as(u64, 100), pipeline.risk_processed.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 100), pipeline.audit_processed.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 100), pipeline.telemetry_processed.load(.acquire));
 }

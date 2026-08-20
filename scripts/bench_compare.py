@@ -70,7 +70,7 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
     print(f"{BOLD}{CYAN}                 AWP HISTORICAL BENCHMARK EVOLUTION TIMELINE                            {RESET}")
     print(f"{BOLD}{CYAN}========================================================================================{RESET}")
     
-    headers = f"{'Milestone / Phase':<30} | {'Commit':<8} | {'Pool Throughput':<15} | {'Pool Mean':<12} | {'p99 Latency':<12} | {'Pure SPSC':<13} | {'64B POD Ring':<13} | {'BipRing':<13}"
+    headers = f"{'Milestone / Phase':<30} | {'Commit':<8} | {'Pool Tput':<11} | {'Pool Lat':<10} | {'Pure SPSC':<11} | {'64B POD':<11} | {'BipRing':<11} | {'Reactor':<12}"
     print(headers)
     print("-" * len(headers))
 
@@ -80,22 +80,22 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
         commit = entry.get("commit", "unknown")
         pool_tput = f"{m.get('pool_throughput_mps', 0.0):.2f} M/s"
         pool_mean = f"{m.get('pool_mean_ns', 0.0):.1f} ns"
-        pool_p99 = f"{m.get('pool_p99_ns', 0.0) / 1000.0:.2f} µs"
         spsc_tput = f"{m.get('spsc_throughput_mops', 0.0):.1f} M/s"
         spsc64 = f"{m.get('spsc64_throughput_mops', 0.0):.1f} M/s" if "spsc64_throughput_mops" in m else "N/A"
         bip = f"{m.get('bip_throughput_mops', 0.0):.1f} M/s" if "bip_throughput_mops" in m else "N/A"
+        reactor = f"{m.get('reactor_throughput_mps', 0.0):.1f} M/s" if "reactor_throughput_mps" in m else "N/A"
 
-        print(f"{name:<30} | {commit:<8} | {pool_tput:<15} | {pool_mean:<12} | {pool_p99:<12} | {spsc_tput:<13} | {spsc64:<13} | {bip:<13}")
+        print(f"{name:<30} | {commit:<8} | {pool_tput:<11} | {pool_mean:<10} | {spsc_tput:<11} | {spsc64:<11} | {bip:<11} | {reactor:<12}")
 
     if current_metrics:
         c_commit, c_branch = get_git_info()
         c_pool_tput = f"{current_metrics.get('pool_throughput_mps', 0.0):.2f} M/s"
         c_pool_mean = f"{current_metrics.get('pool_mean_ns', 0.0):.1f} ns"
-        c_pool_p99 = f"{current_metrics.get('pool_p99_ns', 0.0) / 1000.0:.2f} µs"
         c_spsc_tput = f"{current_metrics.get('spsc_throughput_mops', 0.0):.1f} M/s"
         c_spsc64 = f"{current_metrics.get('spsc64_throughput_mops', 0.0):.1f} M/s" if "spsc64_throughput_mops" in current_metrics else "N/A"
         c_bip = f"{current_metrics.get('bip_throughput_mops', 0.0):.1f} M/s" if "bip_throughput_mops" in current_metrics else "N/A"
-        print(f"{GREEN}{BOLD}{'Current Run (In-Flight)':<30}{RESET} | {c_commit:<8} | {c_pool_tput:<15} | {c_pool_mean:<12} | {c_pool_p99:<12} | {c_spsc_tput:<13} | {c_spsc64:<13} | {c_bip:<13}")
+        c_reactor = f"{current_metrics.get('reactor_throughput_mps', 0.0):.1f} M/s" if "reactor_throughput_mps" in current_metrics else "N/A"
+        print(f"{GREEN}{BOLD}{'Current Run (In-Flight)':<30}{RESET} | {c_commit:<8} | {c_pool_tput:<11} | {c_pool_mean:<10} | {c_spsc_tput:<11} | {c_spsc64:<11} | {c_bip:<11} | {c_reactor:<12}")
 
     print(f"{BOLD}{CYAN}========================================================================================{RESET}\n")
 
@@ -127,6 +127,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("spsc_throughput_mops", "Pure SPSC (M ops/s)", True),
         ("spsc64_throughput_mops", "64B POD Ring (M ops/s)", True),
         ("bip_throughput_mops", "BipBuffer (M pkts/s)", True),
+        ("reactor_throughput_mps", "Reactor (M ticks/s)", True),
     ]
 
     for key, label, higher_is_better in tput_metrics:
@@ -157,6 +158,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("spsc_mean_ns", "Pure SPSC Latency (ns)", False),
         ("spsc64_mean_ns", "64B POD Latency (ns)", False),
         ("bip_mean_ns", "BipBuffer Latency (ns)", False),
+        ("reactor_mean_ns", "Reactor Latency (ns)", False),
     ]
 
     for key, label, higher_is_better in lat_metrics:
@@ -172,7 +174,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
                 if key in ("pool_mean_ns", "pool_p99_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 25000.0:  # Ignore sub-25us micro-jitter on non-RTOS OS
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
-                elif key in ("spsc_mean_ns", "spsc64_mean_ns", "bip_mean_ns") and delta_pct > max_lat_rise_pct:
+                elif key in ("spsc_mean_ns", "spsc64_mean_ns", "bip_mean_ns", "reactor_mean_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 50.0:  # Ignore sub-50ns cache warm-up jitter
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
             else:

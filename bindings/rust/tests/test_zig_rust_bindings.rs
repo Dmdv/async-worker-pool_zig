@@ -213,3 +213,51 @@ fn test_zig_bip_ring_packet_streaming() {
 
     assert!(ring.pop_packet().is_none());
 }
+
+#[test]
+fn test_zig_reactor_and_offpath_pipeline() {
+    let mut offpath = awp_zig_rs::OffPathPipeline::new(512).expect("Failed to create OffPathPipeline");
+    offpath.start().expect("Failed to start OffPathPipeline");
+
+    let mut reactor = awp_zig_rs::TradingReactor::new().expect("Failed to create TradingReactor");
+    reactor.bind_offpath(&offpath);
+
+    for i in 0..100 {
+        let update = awp_zig_rs::BookUpdate64 {
+            timestamp_ns: 1_000_000 + i,
+            seq: i + 1,
+            symbol_id: 1,
+            flags: 1,
+            bid_price: 50_000.0 + i as f64,
+            bid_qty: 2.0,
+            ask_price: 50_001.0 + i as f64,
+            ask_qty: 3.0,
+            _reserved: [0; 8],
+        };
+
+        let sig = reactor.process_tick(&update).expect("Signal expected");
+        assert_eq!(sig.price, update.bid_price);
+        assert_eq!(sig.qty, update.bid_qty);
+        assert_eq!(sig.side, 0); // Buy
+    }
+
+    assert_eq!(reactor.overruns(), 0);
+
+    let mut waited = 0;
+    while (offpath.stats().risk_processed < 100
+        || offpath.stats().audit_processed < 100
+        || offpath.stats().telemetry_processed < 100)
+        && waited < 100
+    {
+        thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+
+    drop(reactor);
+    offpath.stop();
+
+    let stats = offpath.stats();
+    assert_eq!(stats.risk_processed, 100);
+    assert_eq!(stats.audit_processed, 100);
+    assert_eq!(stats.telemetry_processed, 100);
+}
