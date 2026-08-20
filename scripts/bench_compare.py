@@ -195,7 +195,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
 
     return rc
 
-def record_milestone(current_file: str, history_file: str, baseline_file: str, milestone_id: str, milestone_name: str, description: str) -> None:
+def record_milestone(current_file: str, history_file: str, baseline_file: str, milestone_id: str, milestone_name: str, description: str, force: bool = False) -> None:
     curr = load_json(current_file)
     commit, branch = get_git_info()
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -214,15 +214,13 @@ def record_milestone(current_file: str, history_file: str, baseline_file: str, m
     if os.path.exists(history_file):
         history = load_json(history_file)
 
-    # Check if id already exists, update or append
-    updated = False
-    for i, h in enumerate(history):
-        if h.get("id") == milestone_id:
-            history[i] = entry
-            updated = True
-            break
-    if not updated:
-        history.append(entry)
+    for h in history:
+        if h.get("id") == milestone_id and not force:
+            print(f"{RED}Error: Milestone ID '{milestone_id}' already exists in append-only history ledger. Use --force to overwrite.{RESET}", file=sys.stderr)
+            sys.exit(1)
+
+    history = [h for h in history if h.get("id") != milestone_id]
+    history.append(entry)
 
     save_json(history_file, history)
     print(f"{GREEN}✓ Appended milestone '{milestone_name}' ({commit}) to {history_file}{RESET}")
@@ -246,11 +244,12 @@ def main():
     parser.add_argument("--max-tput-drop", type=float, default=50.0, help="Max allowable throughput drop percentage (default: 50.0%%)")
     parser.add_argument("--max-lat-rise", type=float, default=200.0, help="Max allowable latency increase percentage (default: 200.0%%)")
     parser.add_argument("--warn-only", action="store_true", help="Print warning instead of failing build")
-    parser.add_argument("--show-history", action="store_true", default=True, help="Print full history evolution timeline")
+    parser.add_argument("--no-history", action="store_false", dest="show_history", default=True, help="Disable history evolution timeline output")
     parser.add_argument("--record", action="store_true", help="Record current benchmark into history ledger and set as new baseline")
     parser.add_argument("--id", default="", help="Milestone ID for --record (e.g. phase2-64b-pod)")
     parser.add_argument("--name", default="", help="Milestone Name for --record (e.g. 'Phase 2: Generic 64B POD Ring')")
     parser.add_argument("--desc", default="", help="Milestone Description for --record")
+    parser.add_argument("--force", action="store_true", help="Force record milestone even if duplicate or if regression detected")
 
     args = parser.parse_args()
 
@@ -258,7 +257,14 @@ def main():
         if not args.id or not args.name:
             print(f"{RED}Error: --record requires --id and --name{RESET}", file=sys.stderr)
             sys.exit(1)
-        record_milestone(args.current, args.history_file, args.baseline, args.id, args.name, args.desc)
+
+        # Always run regression check before recording milestone into baseline
+        rc = compare_benchmarks(args.baseline, args.current, args.history_file, args.max_tput_drop, args.max_lat_rise, args.warn_only, args.show_history)
+        if rc != 0 and not args.force:
+            print(f"{RED}Error: Cannot record degraded benchmark milestone into baseline without --force.{RESET}", file=sys.stderr)
+            sys.exit(rc)
+
+        record_milestone(args.current, args.history_file, args.baseline, args.id, args.name, args.desc, args.force)
         sys.exit(0)
 
     rc = compare_benchmarks(args.baseline, args.current, args.history_file, args.max_tput_drop, args.max_lat_rise, args.warn_only, args.show_history)

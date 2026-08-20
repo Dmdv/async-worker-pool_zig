@@ -256,6 +256,7 @@ pub fn SpscRing(comptime T: type, comptime capacity: usize) type {
         pub fn initSlab(slab: *HftMemorySlab) !Self {
             const needed_bytes = capacity * @sizeOf(T);
             if (slab.len < needed_bytes) return error.SlabTooSmall;
+            if (@intFromPtr(slab.ptr) % 64 != 0) return error.UnalignedSlab;
             const ptr: [*]T = @ptrCast(@alignCast(slab.ptr));
             return Self{
                 .items = ptr[0..capacity],
@@ -410,10 +411,15 @@ pub fn FrameSpscRing(comptime capacity: usize) type {
     return SpscRing(Frame, capacity);
 }
 
-/// Specialized 64-Byte Cacheline POD SPSC Ring (guarantees sizeof(T) <= 64)
+/// Specialized 64-Byte Cacheline POD SPSC Ring (requires exactly @sizeOf(T) == 64 and @alignOf(T) >= 64)
 pub fn Spsc64Ring(comptime T: type, comptime capacity: usize) type {
     comptime {
-        std.debug.assert(@sizeOf(T) <= 64);
+        if (@sizeOf(T) != 64) {
+            @compileError("Spsc64Ring requires exactly @sizeOf(T) == 64 (1 cacheline per element)");
+        }
+        if (@alignOf(T) < 64) {
+            @compileError("Spsc64Ring requires @alignOf(T) >= 64 to guarantee zero false sharing");
+        }
     }
     return SpscRing(T, capacity);
 }
