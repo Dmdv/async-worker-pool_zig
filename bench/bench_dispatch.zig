@@ -542,7 +542,7 @@ pub fn main() !void {
             pod_throughput / 1e6,
             pod_avg_lat,
             bip_throughput / 1e6,
-            bip_avg_lat,
+            bip_service_time,
             reactor_throughput / 1e6,
             reactor_mean_lat,
         });
