@@ -1030,7 +1030,7 @@ pub const DynamicOffPath = struct {
         while (self.telemetry_ring.popValue()) |sig| {
             exit_count += 1;
             if (sig.timestamp_ns >= sig.ingress_ts_ns) {
-                exit_lat += (sig.timestamp_ns - sig.ingress_ts_ns);
+                exit_lat +%= (sig.timestamp_ns - sig.ingress_ts_ns);
             }
         }
         if (exit_count > 0) {
