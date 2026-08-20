@@ -115,7 +115,7 @@ fn main() -> Result<(), AwpError> {
     }
 
     // 4. Query off-path background worker statistics
-    let stats = reactor.offpath_stats().unwrap();
+    let stats = reactor.offpath_stats().expect("offpath pipeline must be bound before querying stats");
     println!("Worker Stats: Risk={}, Audit={}, Telemetry={}, Overruns={}",
         stats.risk_processed, stats.audit_processed, stats.telemetry_processed, reactor.overruns());
 
