@@ -530,14 +530,19 @@ impl<'a> TradingReactor<'a> {
     }
 
     /// Process incoming 64-byte top-of-book market update on the Fast-Path Core.
-    /// Returns Some(OrderSignal64) if a signal was generated.
-    pub fn process_tick(&mut self, update: &BookUpdate64) -> Option<OrderSignal64> {
+    /// Returns Ok(Some(OrderSignal64)) if a signal was generated.
+    pub fn process_tick(
+        &mut self,
+        update: &BookUpdate64,
+    ) -> Result<Option<OrderSignal64>, AwpError> {
         let mut signal: OrderSignal64 = unsafe { std::mem::zeroed() };
         let rc = unsafe { sys::awp_zig_reactor_process_tick(self.handle, update, &mut signal) };
         if rc == 0 {
-            Some(signal)
+            Ok(Some(signal))
+        } else if rc > 0 {
+            Ok(None)
         } else {
-            None
+            Err(AwpError::from(rc))
         }
     }
 
@@ -647,5 +652,31 @@ impl Drop for OffPathPipeline {
             }
             self.handle = ptr::null_mut();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_tick_propagates_ffi_errors() {
+        let mut reactor = TradingReactor {
+            handle: ptr::null_mut(),
+            _marker: std::marker::PhantomData,
+        };
+        let update = BookUpdate64 {
+            timestamp_ns: 0,
+            seq: 0,
+            symbol_id: 0,
+            flags: 0,
+            bid_price: 0.0,
+            bid_qty: 0.0,
+            ask_price: 0.0,
+            ask_qty: 0.0,
+            _reserved: [0; 8],
+        };
+
+        assert_eq!(reactor.process_tick(&update), Err(AwpError::InvalidArg));
     }
 }

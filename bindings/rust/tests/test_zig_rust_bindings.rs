@@ -216,7 +216,8 @@ fn test_zig_bip_ring_packet_streaming() {
 
 #[test]
 fn test_zig_reactor_and_offpath_pipeline() {
-    let mut offpath = awp_zig_rs::OffPathPipeline::new(512).expect("Failed to create OffPathPipeline");
+    let mut offpath =
+        awp_zig_rs::OffPathPipeline::new(512).expect("Failed to create OffPathPipeline");
     offpath.start().expect("Failed to start OffPathPipeline");
 
     let mut reactor = awp_zig_rs::TradingReactor::new().expect("Failed to create TradingReactor");
@@ -235,7 +236,10 @@ fn test_zig_reactor_and_offpath_pipeline() {
             _reserved: [0; 8],
         };
 
-        let sig = reactor.process_tick(&update).expect("Signal expected");
+        let sig = reactor
+            .process_tick(&update)
+            .expect("process_tick failed")
+            .expect("Signal expected");
         assert_eq!(sig.price, update.bid_price);
         assert_eq!(sig.qty, update.bid_qty);
         assert_eq!(sig.side, 0); // Buy
