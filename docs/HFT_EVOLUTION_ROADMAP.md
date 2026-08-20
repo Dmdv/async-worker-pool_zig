@@ -15,15 +15,15 @@ In Tier-1 High-Frequency Trading (FX, Equities, Crypto Market Making) with sub-m
 
 ```mermaid
 flowchart TD
-    subgraph FastPath ["🚀 Critical Fast-Path (Single-Threaded Zero-Hop < 1 µs)"]
+    subgraph FastPath ["Critical Fast-Path (Single-Threaded Zero-Hop)"]
         NIC["Solarflare NIC / Kernel Bypass (EF_VI / DPDK)"] --> |Zero-Copy DMA| Reactor["Single-Threaded Trading Reactor (Pinned Core 1)"]
         Reactor --> |In-Memory L1 Match| OrderBook["In-Memory L1/L2 OrderBook"]
         Reactor --> |Direct Socket TX| Gateway["Outbound Order Gateway (Zero Context Hop)"]
     end
 
-    subgraph AsyncOffPath ["⚡ Async Off-Path Pipeline (Worker Pool via SPSC 64B Rings)"]
-        Reactor -.-> |Non-Blocking SPSC Claim/Commit (15 ns)| SpscRing1["64-Byte POD Ring (Book Updates)"]
-        Reactor -.-> |Non-Blocking SPSC Claim/Commit (15 ns)| SpscRing2["Variable-Length Ring (Raw PCAP / ITCH)"]
+    subgraph AsyncOffPath ["Async Off-Path Pipeline (Worker Pool via SPSC 64B Rings)"]
+        Reactor --> |"Non-Blocking SPSC (15 ns)"| SpscRing1["64-Byte POD Ring (Book Updates)"]
+        Reactor --> |"Non-Blocking SPSC (15 ns)"| SpscRing2["Variable-Length Ring (Raw PCAP / ITCH)"]
         
         SpscRing1 --> Worker1["Worker Core 2: Async Risk Engine"]
         SpscRing1 --> Worker2["Worker Core 3: Historical Data Recorder"]
