@@ -1,0 +1,65 @@
+name: CI / Verification
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint-and-zig-tests:
+    name: Zig Format Lint & Native Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Zig Code Formatting Check (Linter)
+        run: zig fmt --check src/*.zig bench/*.zig
+
+      - name: Run Zig Native Unit Tests
+        run: zig test src/root.zig
+
+      - name: Build Static Library & Benchmarks (ReleaseFast)
+        run: zig build bench -Doptimize=ReleaseFast
+
+  rust-ffi-tests-macos:
+    name: macOS Rust FFI (awp-zig-rs)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust FFI Tests (awp-zig-rs)
+        run: make check-rust
+
+      - name: Run Rust FFI Benchmark (1M Messages)
+        run: make bench-rust
+
+  rust-ffi-tests-linux:
+    name: Linux Rust FFI (awp-zig-rs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust FFI Tests (awp-zig-rs)
+        run: make check-rust

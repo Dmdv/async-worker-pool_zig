@@ -136,7 +136,6 @@ pub fn SpscRing(comptime capacity: usize) type {
     };
 }
 
-
 /// Bounded MPMC / MPSC Lock-Free Ring Buffer with Embedded Pre-allocated Slabs
 pub fn LockFreeRing(comptime capacity: usize) type {
     comptime {
@@ -323,4 +322,50 @@ pub fn AwpPool(comptime num_workers: usize, comptime queue_capacity: usize) type
             self.rings[target_shard].commit(c);
         }
     };
+}
+
+test "SpscRing push pop" {
+    var ring = try SpscRing(64).init(std.testing.allocator);
+    defer ring.deinit();
+
+    var f: Frame = .{};
+    @memcpy(f.feed[0..4], "test");
+    f.feed[4] = 0;
+    try std.testing.expect(ring.tryPush(&f));
+
+    const pop_f = ring.tryPop();
+    try std.testing.expect(pop_f != null);
+    try std.testing.expectEqualStrings("test", std.mem.sliceTo(&pop_f.?.feed, 0));
+}
+
+test "SIMD fastSum64" {
+    const buf = [_]u8{1} ** 64;
+    const sum = fastSum64(&buf);
+    try std.testing.expectEqual(@as(u32, 64), sum);
+}
+
+test "DynamicPool lifecycle" {
+    const Helper = struct {
+        var count: usize = 0;
+        fn process(frame: *const Frame, user: ?*anyopaque) callconv(.c) i32 {
+            _ = frame;
+            _ = user;
+            count += 1;
+            return 0;
+        }
+    };
+    Helper.count = 0;
+
+    const pool = try DynamicPool.init(std.testing.allocator, 2, 64, Helper.process, null);
+    defer pool.deinit();
+
+    const claim_slot = pool.claim(0);
+    try std.testing.expect(claim_slot != null);
+    pool.commit(claim_slot.?);
+
+    var waited: usize = 0;
+    while (Helper.count < 1 and waited < 100_000) : (waited += 1) {
+        try std.Thread.yield();
+    }
+    try std.testing.expectEqual(@as(usize, 1), Helper.count);
 }
