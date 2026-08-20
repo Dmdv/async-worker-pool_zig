@@ -530,7 +530,8 @@ impl<'a> TradingReactor<'a> {
     }
 
     /// Process incoming 64-byte top-of-book market update on the Fast-Path Core.
-    /// Returns Ok(Some(OrderSignal64)) if a signal was generated.
+    /// Returns `Ok(Some(OrderSignal64))` if a signal was generated, `Ok(None)` if no
+    /// signal was produced, or `Err(AwpError)` if the FFI call failed.
     pub fn process_tick(
         &mut self,
         update: &BookUpdate64,
