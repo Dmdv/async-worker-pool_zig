@@ -790,7 +790,12 @@ pub const DynamicReactor = struct {
         self.allocator.destroy(self);
     }
 
-    pub inline fn processTick(self: *DynamicReactor, update: root.BookUpdate64, out_signal: *root.OrderSignal64) bool {
+    pub inline fn processTickWithTs(
+        self: *DynamicReactor,
+        update: root.BookUpdate64,
+        now_ns: u64,
+        out_signal: *root.OrderSignal64,
+    ) bool {
         self.processed_ticks += 1;
         self.best_bid_price = update.bid_price;
         self.best_ask_price = update.ask_price;
@@ -800,7 +805,7 @@ pub const DynamicReactor = struct {
 
         if (update.ask_price > update.bid_price and update.bid_price > 0) {
             const sig = root.OrderSignal64{
-                .timestamp_ns = root.nowNs(),
+                .timestamp_ns = now_ns,
                 .ingress_ts_ns = update.timestamp_ns,
                 .order_id = self.next_order_id,
                 .price = update.bid_price,
@@ -819,6 +824,10 @@ pub const DynamicReactor = struct {
             return true;
         }
         return false;
+    }
+
+    pub inline fn processTick(self: *DynamicReactor, update: root.BookUpdate64, out_signal: *root.OrderSignal64) bool {
+        return self.processTickWithTs(update, root.nowNs(), out_signal);
     }
 
     inline fn fanOutNonBlocking(self: *DynamicReactor, signal: root.OrderSignal64) void {
@@ -955,8 +964,14 @@ pub const DynamicOffPath = struct {
             }
         }
         var exit_count: u64 = 0;
-        while (self.risk_ring.popValue()) |_| {
+        while (self.risk_ring.popValue()) |sig| {
             exit_count += 1;
+            if (sig.side == 0) {
+                position += sig.qty;
+            } else {
+                position -= sig.qty;
+            }
+            notional += sig.price * sig.qty;
         }
         if (exit_count > 0) {
             _ = self.risk_processed.fetchAdd(exit_count, .monotonic);
@@ -981,8 +996,9 @@ pub const DynamicOffPath = struct {
             }
         }
         var exit_count: u64 = 0;
-        while (self.audit_ring.popValue()) |_| {
+        while (self.audit_ring.popValue()) |sig| {
             exit_count += 1;
+            checksum +%= sig.order_id ^ sig.timestamp_ns;
         }
         if (exit_count > 0) {
             _ = self.audit_processed.fetchAdd(exit_count, .monotonic);
@@ -1010,10 +1026,17 @@ pub const DynamicOffPath = struct {
             }
         }
         var exit_count: u64 = 0;
-        while (self.telemetry_ring.popValue()) |_| {
+        var exit_lat: u64 = 0;
+        while (self.telemetry_ring.popValue()) |sig| {
             exit_count += 1;
+            if (sig.timestamp_ns >= sig.ingress_ts_ns) {
+                exit_lat += (sig.timestamp_ns - sig.ingress_ts_ns);
+            }
         }
         if (exit_count > 0) {
+            if (exit_lat > 0) {
+                _ = self.total_latency_ns.fetchAdd(exit_lat, .monotonic);
+            }
             _ = self.telemetry_processed.fetchAdd(exit_count, .monotonic);
         }
     }
@@ -1037,6 +1060,20 @@ pub export fn awp_zig_reactor_process_tick(reactor_ptr: ?*anyopaque, update: ?*c
     if (reactor_ptr == null or update == null or out_signal == null) return -22;
     const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
     if (reactor.processTick(update.?.*, out_signal.?)) {
+        return 0; // Signal generated
+    }
+    return 1; // Evaluated cleanly, no signal generated
+}
+
+pub export fn awp_zig_reactor_process_tick_with_ts(
+    reactor_ptr: ?*anyopaque,
+    update: ?*const root.BookUpdate64,
+    now_ns: u64,
+    out_signal: ?*root.OrderSignal64,
+) callconv(.c) c_int {
+    if (reactor_ptr == null or update == null or out_signal == null) return -22;
+    const reactor: *DynamicReactor = @ptrCast(@alignCast(reactor_ptr.?));
+    if (reactor.processTickWithTs(update.?.*, now_ns, out_signal.?)) {
         return 0; // Signal generated
     }
     return 1; // Evaluated cleanly, no signal generated

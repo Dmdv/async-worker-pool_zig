@@ -45,16 +45,16 @@ In institutional High-Frequency Trading (HFT) and ultra-low-latency market makin
 ### `OrderSignal64` (64-Byte Cacheline POD)
 ```zig
 pub const OrderSignal64 = extern struct {
-    timestamp_ns: u64,     // 8B: Nanosecond timestamp of signal generation
-    ingress_ts_ns: u64,    // 8B: Market data ingress tick timestamp
-    order_id: u64,         // 8B: Unique client order identifier
-    symbol_id: u32,        // 4B: Integer instrument ID
-    side: u32,             // 4B: 1 = Buy, 2 = Sell
-    price: i64,            // 8B: Fixed-point price in ticks
-    qty: u64,              // 8B: Quantity in base lots
-    action: u8,            // 1B: 1 = New, 2 = Cancel, 3 = Replace
-    flags: u8,             // 1B: 0x01 = IOC, 0x02 = PostOnly, 0x04 = Market
-    _pad: [14]u8,          // 14B: Zero-padding to exactly 64 bytes (1 cache line)
+    timestamp_ns: u64 align(64), // 8B: Nanosecond timestamp of signal generation (64B cacheline aligned)
+    ingress_ts_ns: u64,          // 8B: Market data ingress tick timestamp
+    order_id: u64,               // 8B: Unique client order identifier
+    price: f64,                  // 8B: Fixed-point / float price
+    qty: f64,                    // 8B: Quantity in base lots
+    symbol_id: u32,              // 4B: Integer instrument ID
+    side: u32,                   // 4B: 0 = Buy, 1 = Sell
+    action: u32,                 // 4B: 1 = New, 2 = Cancel, 3 = Replace
+    flags: u32,                  // 4B: 0x01 = IOC, 0x02 = PostOnly, 0x04 = Market
+    _reserved: [8]u8,            // 8B: Zero-padding to exactly 64 bytes (1 cache line)
 };
 ```
 

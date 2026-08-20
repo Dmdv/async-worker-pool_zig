@@ -70,7 +70,14 @@ cp "$DOCS_DIR/benchmarks/benchmark-suite.md" "$WIKI_DIR/HFT-Benchmark-Methodolog
 cp "$DOCS_DIR/HFT_EVOLUTION_ROADMAP.md" "$WIKI_DIR/HFT-Evolution-Roadmap.md"
 
 # 3. Transform relative markdown links to Wiki links and strip emojis from document bodies
-"$REPO_DIR/venv/bin/python" - << 'PY'
+PYTHON_BIN="python3"
+if [ -f "$REPO_DIR/venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_DIR/venv/bin/python"
+elif [ -f "$REPO_DIR/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_DIR/.venv/bin/python"
+fi
+
+"$PYTHON_BIN" - << 'PY'
 import os
 import re
 

@@ -144,6 +144,12 @@ extern "C" {
         update: *const BookUpdate64,
         out_signal: *mut OrderSignal64,
     ) -> c_int;
+    pub fn awp_zig_reactor_process_tick_with_ts(
+        reactor: *mut c_void,
+        update: *const BookUpdate64,
+        now_ns: u64,
+        out_signal: *mut OrderSignal64,
+    ) -> c_int;
     pub fn awp_zig_reactor_bind_risk_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
     pub fn awp_zig_reactor_bind_audit_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
     pub fn awp_zig_reactor_bind_telemetry_ring(reactor: *mut c_void, ring: *mut c_void) -> c_int;
