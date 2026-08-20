@@ -12,9 +12,10 @@ Every release and architectural milestone includes **verified hardware-calibrate
 ### Added
 - **`comptime SpscRing(comptime T: type, comptime capacity: usize)`**:
   - Generic, zero-CAS, lock-free Single-Producer Single-Consumer ring buffer.
-  - Strict 64-byte alignment on all buffer elements (`[]align(64) T`) and atomic indices (`head`, `tail`, `cached_head`, `cached_tail`) to eliminate false sharing and split-cacheline penalties across CPU cores.
-  - Compile-time power-of-two capacity validation.
-  - Dual reference (`claim()` / `commit()`, `tryPop()`) and value (`pushValue()`, `popValue()`) zero-copy API.
+  - 128-byte alignment on all atomic index cachelines (`head`, `tail`, `cached_head`, `cached_tail`) to eliminate false sharing across 64B & 128B (Apple M-series) cacheline sectors.
+  - Strict modular wrapping subtraction (`-%`) and addition (`+%`) for infinite index increment without integer overflow panics.
+  - Dual 2-phase zero-copy API (`claim()` / `commit()`, `peek()` / `consume()`) and safe value API (`pushValue()`, `popValue()`, `tryPop(&out)`).
+  - Compile-time power-of-two capacity validation with `@compileError`.
 - **HugePage Slab Backing (`initSlab`)**:
   - Direct initialization of `SpscRing` backed by pre-allocated `HftMemorySlab` (2MB HugePages, startup prefaulting, `mlock`).
 - **Financial POD Data Structures**:

@@ -178,8 +178,9 @@ pub fn main() !void {
             var got: usize = 0;
             var sum: u64 = 0;
             while (got < ctx.n) {
-                if (ctx.ring.tryPop()) |frame| {
+                if (ctx.ring.peek()) |frame| {
                     sum +%= awp.fastSum64(frame.payload[0..64]);
+                    ctx.ring.consume();
                     got += 1;
                 } else {
                     std.atomic.spinLoopHint();
@@ -218,7 +219,7 @@ pub fn main() !void {
     const s_avg_lat = s_duration_ns / @as(f64, @floatFromInt(NUM_MSGS));
 
     std.debug.print("Concurrent 4KB SPSC Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ s_throughput / 1e6, s_duration_ns / 1e6 });
-    std.debug.print("Concurrent 4KB SPSC Mean Hop Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ s_avg_lat, s_avg_lat / 1000.0, spsc_ctx.csum.load(.monotonic) });
+    std.debug.print("Concurrent 4KB SPSC Hop Period: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ s_avg_lat, s_avg_lat / 1000.0, spsc_ctx.csum.load(.monotonic) });
 
     // 4. Raw Pointer Passing SPSC Ring (Exact Equivalent to C bench_ring.c SPSC)
     std.debug.print("=== Zig 0.16 Pure Pointer SPSC Ring (Exact Equivalent to C bench_ring.c) ===\n", .{});
@@ -275,7 +276,7 @@ pub fn main() !void {
     const p_avg_lat = p_duration_ns / @as(f64, @floatFromInt(PTR_MSGS));
 
     std.debug.print("Pure SPSC Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ p_throughput / 1e6, p_duration_ns / 1e6 });
-    std.debug.print("Pure SPSC Ring Mean Latency: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });
+    std.debug.print("Pure SPSC Ring Hop Period: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });
 
     // 5. Phase 2: Generic 64-Byte Cacheline POD SPSC Ring (BookUpdate64)
     std.debug.print("=== Zig 0.16 Generic 64-Byte Cacheline POD Ring (BookUpdate64) ===\n", .{});
@@ -297,7 +298,7 @@ pub fn main() !void {
             var got: usize = 0;
             var sum: u64 = 0;
             while (got < ctx.n) {
-                if (ctx.ring.tryPop()) |item| {
+                if (ctx.ring.popValue()) |item| {
                     sum +%= item.seq +% @as(u64, @bitCast(item.bid_price));
                     got += 1;
                 } else {

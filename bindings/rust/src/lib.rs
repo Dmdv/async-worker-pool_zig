@@ -16,8 +16,7 @@ pub use sys::{
     AWP_SYMBOL_MAX,
 };
 
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_int, c_void};
 use std::ptr;
 
 #[inline]
@@ -70,19 +69,15 @@ impl<'a> FrameView<'a> {
     /// Feed label as a string slice.
     #[inline]
     pub fn feed(&self) -> &str {
-        unsafe {
-            let cstr = CStr::from_ptr(self.raw.feed.as_ptr() as *const c_char);
-            cstr.to_str().unwrap_or("")
-        }
+        let nul_pos = self.raw.feed.iter().position(|&b| b == 0).unwrap_or(self.raw.feed.len());
+        std::str::from_utf8(&self.raw.feed[..nul_pos]).unwrap_or("")
     }
 
     /// Symbol label as a string slice.
     #[inline]
     pub fn symbol(&self) -> &str {
-        unsafe {
-            let cstr = CStr::from_ptr(self.raw.symbol.as_ptr() as *const c_char);
-            cstr.to_str().unwrap_or("")
-        }
+        let nul_pos = self.raw.symbol.iter().position(|&b| b == 0).unwrap_or(self.raw.symbol.len());
+        std::str::from_utf8(&self.raw.symbol[..nul_pos]).unwrap_or("")
     }
 
     /// Zero-copy read of a plain-old-data (POD) struct value from payload.
@@ -115,7 +110,19 @@ impl<'a> ClaimGuard<'a> {
         }
     }
 
-    /// Set payload length before committing.
+    /// Set feed label string.
+    pub fn set_feed(&mut self, feed: &str) -> Result<(), AwpError> {
+        let f = unsafe { &mut *self.claim.frame };
+        copy_str_to_fixed_buf(feed, &mut f.feed)
+    }
+
+    /// Set symbol label string.
+    pub fn set_symbol(&mut self, symbol: &str) -> Result<(), AwpError> {
+        let f = unsafe { &mut *self.claim.frame };
+        copy_str_to_fixed_buf(symbol, &mut f.symbol)
+    }
+
+    /// Set payload length.
     #[inline]
     pub fn set_payload_len(&mut self, len: usize) {
         unsafe {
@@ -124,21 +131,7 @@ impl<'a> ClaimGuard<'a> {
         }
     }
 
-    /// Set feed label in-place without heap allocation.
-    #[inline]
-    pub fn set_feed(&mut self, feed: &str) -> Result<(), AwpError> {
-        let f = unsafe { &mut *self.claim.frame };
-        copy_str_to_fixed_buf(feed, &mut f.feed)
-    }
-
-    /// Set symbol label in-place without heap allocation.
-    #[inline]
-    pub fn set_symbol(&mut self, symbol: &str) -> Result<(), AwpError> {
-        let f = unsafe { &mut *self.claim.frame };
-        copy_str_to_fixed_buf(symbol, &mut f.symbol)
-    }
-
-    /// Set custom frame flags.
+    /// Set custom user/system flags.
     #[inline]
     pub fn set_flags(&mut self, flags: u32) {
         unsafe {
@@ -163,34 +156,31 @@ impl<'a> ClaimGuard<'a> {
         Ok(())
     }
 
-    /// Commit the frame to the worker queue.
-    #[inline]
-    pub fn commit(mut self) -> Result<(), AwpError> {
-        let rc = unsafe { sys::awp_zig_commit(self.pool.handle, &self.claim) };
-        if rc == 0 {
-            self.committed = true;
-            Ok(())
-        } else {
-            Err(AwpError::from(rc))
-        }
-    }
-
     /// Explicitly abort/discard the claim without committing user work.
-    /// Safely commits a dropped frame (AWP_FLAG_DROPPED) so the ring sequence can advance without triggering worker callbacks.
     #[inline]
     pub fn abort(self) {
-        // Drop implementation publishes the tombstone frame to advance the ring sequence
+        // Drop implementation publishes the tombstone frame
+    }
+
+    /// Commit the frame to the worker queue.
+    pub fn commit(mut self) -> Result<(), AwpError> {
+        let rc = unsafe { sys::awp_zig_commit(self.pool.handle, &self.claim) };
+        if rc != 0 {
+            return Err(AwpError::from(rc));
+        }
+        self.committed = true;
+        Ok(())
     }
 }
 
 impl<'a> Drop for ClaimGuard<'a> {
     fn drop(&mut self) {
         if !self.committed {
-            // Auto-commit a no-op tombstone frame to prevent stalling the sequence ring
+            // Mark dropped/abandoned frame
             unsafe {
                 let f = &mut *self.claim.frame;
-                f.payload_len = 0;
                 f.flags = sys::AWP_FLAG_DROPPED;
+                f.payload_len = 0;
                 f.feed[0] = 0;
                 f.symbol[0] = 0;
                 let _ = sys::awp_zig_commit(self.pool.handle, &self.claim);
@@ -200,62 +190,59 @@ impl<'a> Drop for ClaimGuard<'a> {
     }
 }
 
-type CallbackBox = Box<dyn Fn(FrameView) -> i32 + Send + Sync + 'static>;
+struct ContextClosure {
+    callback: Box<dyn Fn(&FrameView) -> i32 + Send + Sync + 'static>,
+}
 
-/// Safe RAII wrapper for the Zig Async Worker Pool.
+unsafe extern "C" fn trampoline(frame: *const sys::AwpFrame, user: *mut c_void) -> c_int {
+    let ctx = &*(user as *const ContextClosure);
+    let view = FrameView { raw: &*frame };
+    (ctx.callback)(&view) as c_int
+}
+
+/// Safe Rust wrapper over Zig `DynamicPool`.
 pub struct AsyncWorkerPool {
     handle: *mut c_void,
-    _context: Box<CallbackBox>,
+    _ctx: Box<ContextClosure>,
 }
 
 unsafe impl Send for AsyncWorkerPool {}
 unsafe impl Sync for AsyncWorkerPool {}
 
-unsafe extern "C" fn rust_process_trampoline(
-    frame: *const sys::AwpFrame,
-    user: *mut c_void,
-) -> c_int {
-    let cb_ptr = user as *const CallbackBox;
-    let cb = &*cb_ptr;
-    let view = FrameView { raw: &*frame };
-    cb(view) as c_int
-}
-
 impl AsyncWorkerPool {
-    /// Create a new worker pool powered by the Zig 0.16 engine.
+    /// Create a new asynchronous worker pool.
     pub fn new<F>(
         workers: u32,
         queue_capacity: u32,
         callback: F,
     ) -> Result<Self, AwpError>
     where
-        F: Fn(FrameView) -> i32 + Send + Sync + 'static,
+        F: Fn(&FrameView) -> i32 + Send + Sync + 'static,
     {
-        let cb_box: Box<CallbackBox> = Box::new(Box::new(callback));
-        let user_ptr = (&*cb_box as *const CallbackBox) as *mut c_void;
-
         let mut handle: *mut c_void = ptr::null_mut();
+        let ctx = Box::new(ContextClosure {
+            callback: Box::new(callback),
+        });
+        let user_data = &*ctx as *const ContextClosure as *mut c_void;
+
         let rc = unsafe {
             sys::awp_zig_pool_create(
                 workers,
                 queue_capacity,
-                Some(rust_process_trampoline),
-                user_ptr,
+                Some(trampoline),
+                user_data,
                 &mut handle,
             )
         };
 
-        if rc != 0 || handle.is_null() {
+        if rc != 0 {
             return Err(AwpError::from(rc));
         }
 
-        Ok(Self {
-            handle,
-            _context: cb_box,
-        })
+        Ok(Self { handle, _ctx: ctx })
     }
 
-    /// Submit a message by copying payload (Zero-Allocation stack string parsing).
+    /// High-level submission helper with automatic string labeling and payload copy.
     pub fn submit(
         &self,
         feed: &str,
@@ -263,7 +250,6 @@ impl AsyncWorkerPool {
         payload: &[u8],
         flags: u32,
     ) -> Result<(), AwpError> {
-        // Compute shard via simple FNV-1a hash
         let mut hash: u64 = 0xcbf29ce484222325;
         for b in feed.as_bytes() {
             hash = (hash ^ (*b as u64)).wrapping_mul(0x100000001b3);
@@ -277,7 +263,8 @@ impl AsyncWorkerPool {
         let mut guard = loop {
             match self.claim(shard) {
                 Ok(g) => break g,
-                Err(_) => std::thread::yield_now(),
+                Err(AwpError::QueueFull) => std::thread::yield_now(),
+                Err(err) => return Err(err),
             }
         };
 

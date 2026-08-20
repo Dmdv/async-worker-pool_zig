@@ -89,3 +89,10 @@ extern "C" {
         flags: u32,
     ) -> c_int;
 }
+
+const _: () = {
+    assert!(std::mem::size_of::<BookUpdate64>() == 64);
+    assert!(std::mem::align_of::<BookUpdate64>() == 64);
+    assert!(std::mem::size_of::<Trade64>() == 64);
+    assert!(std::mem::align_of::<Trade64>() == 64);
+};

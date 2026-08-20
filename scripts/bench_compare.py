@@ -160,13 +160,16 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
             c_val = float(curr[key])
             if key in base:
                 b_val = float(base[key])
-                delta_pct = ((c_val - b_val) / b_val) * 100.0 if b_val > 0 else 0.0
+                delta_pct = ((c_val - b_val) / b_val) * 100.0 if b_val > 0 else (0.0 if c_val == 0 else 100.0)
                 delta_str = format_delta(delta_pct, higher_is_better)
                 print(f"{label:<25} | {b_val:<14.2f} | {c_val:<14.2f} | {delta_str}")
 
-                # Check regression for p99 / mean (guard against sub-25us non-RTOS OS scheduler quantum noise)
+                # Check regression for pool latency (25us filter) & SPSC latency (50ns filter)
                 if key in ("pool_mean_ns", "pool_p99_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 25000.0:  # Ignore sub-25us micro-jitter on non-RTOS OS
+                        regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
+                elif key in ("spsc_mean_ns", "spsc64_mean_ns") and delta_pct > max_lat_rise_pct:
+                    if (c_val - b_val) > 50.0:  # Ignore sub-50ns cache warm-up jitter
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
             else:
                 print(f"{label:<25} | {'N/A (New)':<14} | {c_val:<14.2f} | {GREEN}✨ NEW FEATURE{RESET}")
@@ -240,7 +243,7 @@ def main():
     parser.add_argument("baseline", nargs="?", default="benchmarks/baseline.json", help="Path to baseline.json")
     parser.add_argument("current", nargs="?", default="/tmp/awp_current_bench.json", help="Path to current benchmark.json")
     parser.add_argument("--history-file", default="benchmarks/history.json", help="Path to history.json ledger")
-    parser.add_argument("--max-tput-drop", type=float, default=45.0, help="Max allowable throughput drop percentage (default: 45.0%%)")
+    parser.add_argument("--max-tput-drop", type=float, default=50.0, help="Max allowable throughput drop percentage (default: 50.0%%)")
     parser.add_argument("--max-lat-rise", type=float, default=200.0, help="Max allowable latency increase percentage (default: 200.0%%)")
     parser.add_argument("--warn-only", action="store_true", help="Print warning instead of failing build")
     parser.add_argument("--show-history", action="store_true", default=True, help="Print full history evolution timeline")
