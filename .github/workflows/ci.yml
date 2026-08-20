@@ -9,23 +9,21 @@ on:
 jobs:
   lint-and-zig-tests:
     name: Zig Format Lint & Native Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: master
+        run: brew install zig || brew upgrade zig
 
       - name: Zig Code Formatting Check (Linter)
-        run: zig fmt --check src/*.zig bench/*.zig
+        run: make lint
 
       - name: Run Zig Native Unit Tests
-        run: zig test src/root.zig
+        run: make check
 
       - name: Build Static Library & Benchmarks (ReleaseFast)
-        run: zig build bench -Doptimize=ReleaseFast
+        run: make bench
 
   rust-ffi-tests-macos:
     name: macOS Rust FFI (awp-zig-rs)
@@ -34,9 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: master
+        run: brew install zig || brew upgrade zig
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,9 +50,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Zig
-        uses: mlugg/setup-zig@v1
+        uses: goto-bus-stop/setup-zig@v2
         with:
-          version: master
+          version: 0.14.0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
