@@ -31,7 +31,11 @@ fn main() {
 
     let ar_status = Command::new("ar")
         .current_dir(&zig_project_dir)
-        .args(["rcs", lib_path.to_str().unwrap(), obj_path.to_str().unwrap()])
+        .args([
+            "rcs",
+            lib_path.to_str().unwrap(),
+            obj_path.to_str().unwrap(),
+        ])
         .status()
         .expect("Failed to execute ar");
 

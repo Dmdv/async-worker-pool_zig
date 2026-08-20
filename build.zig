@@ -39,4 +39,12 @@ pub fn build(b: *std.Build) void {
     }
     const bench_step = b.step("bench", "Run the Zig dispatch benchmark");
     bench_step.dependOn(&run_bench.step);
+
+    // 3. Unit Tests
+    const unit_tests = b.addTest(.{
+        .root_module = awp_mod,
+    });
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
 }

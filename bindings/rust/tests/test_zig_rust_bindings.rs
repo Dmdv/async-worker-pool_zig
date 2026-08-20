@@ -147,3 +147,69 @@ fn test_zig_book_update_64b_pod() {
 
     assert_eq!(processed.load(Ordering::Acquire), 100);
 }
+
+#[test]
+fn test_zig_bip_buffer_streaming() {
+    let mut bip = awp_zig_rs::BipBuffer::new(4096).expect("Failed to create BipBuffer");
+
+    // Push 3 variable-length payloads
+    assert!(bip.push(b"small_64b_message_payload_example"));
+    assert!(bip.push(&[0xAA; 512]));
+    assert!(bip.push(&[0xBB; 1400])); // MTU size
+
+    // Peek & Consume
+    let slice = bip.peek().expect("Peek failed");
+    assert!(slice.len() >= 33);
+    assert_eq!(&slice[..33], b"small_64b_message_payload_example");
+    unsafe { bip.consume(33).expect("Consume failed") };
+
+    let slice2 = bip.peek().expect("Peek failed");
+    assert_eq!(slice2[0], 0xAA);
+    unsafe { bip.consume(512).expect("Consume failed") };
+
+    let slice3 = bip.peek().expect("Peek failed");
+    assert_eq!(slice3[0], 0xBB);
+    unsafe { bip.consume(1400).expect("Consume failed") };
+
+    // Test direct reserve & commit with bounds checking
+    let res = bip.reserve(100).expect("Reserve 100 failed");
+    res[0] = 0xCC;
+    // Overcommit fails
+    unsafe {
+        assert!(bip.commit(101).is_err());
+    }
+    // Correct commit succeeds
+    unsafe {
+        bip.commit(100).expect("Commit 100 failed");
+    }
+    let slice4 = bip.peek().expect("Peek failed");
+    assert_eq!(slice4[0], 0xCC);
+    unsafe { bip.consume(100).expect("Consume failed") };
+}
+
+#[test]
+fn test_zig_bip_ring_packet_streaming() {
+    let mut ring = awp_zig_rs::BipRing::new(8192, 128).expect("Failed to create BipRing");
+
+    let p1 = b"Ethernet header + IP header + UDP header";
+    let p2 = vec![0x33u8; 1400]; // MTU payload
+
+    assert!(ring.push_packet(p1, 1_000_001));
+    assert!(ring.push_packet(&p2, 1_000_002));
+
+    {
+        let pkt1 = ring.pop_packet().expect("Pop pkt1 failed");
+        assert_eq!(pkt1.payload(), p1);
+        assert_eq!(pkt1.timestamp_ns(), 1_000_001);
+        assert_eq!(pkt1.len(), p1.len());
+    }
+
+    {
+        let pkt2 = ring.pop_packet().expect("Pop pkt2 failed");
+        assert_eq!(pkt2.payload(), &p2[..]);
+        assert_eq!(pkt2.timestamp_ns(), 1_000_002);
+        assert_eq!(pkt2.len(), 1400);
+    }
+
+    assert!(ring.pop_packet().is_none());
+}

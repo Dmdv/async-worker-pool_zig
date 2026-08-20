@@ -124,6 +124,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("pool_throughput_mps", "Pool Throughput (M msg/s)", True),
         ("spsc_throughput_mops", "Pure SPSC (M ops/s)", True),
         ("spsc64_throughput_mops", "64B POD Ring (M ops/s)", True),
+        ("bip_throughput_mops", "BipBuffer (M pkts/s)", True),
     ]
 
     for key, label, higher_is_better in tput_metrics:
@@ -153,6 +154,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("pool_max_ns", "Pool Max Latency (ns)", False),
         ("spsc_mean_ns", "Pure SPSC Latency (ns)", False),
         ("spsc64_mean_ns", "64B POD Latency (ns)", False),
+        ("bip_mean_ns", "BipBuffer Latency (ns)", False),
     ]
 
     for key, label, higher_is_better in lat_metrics:
@@ -168,7 +170,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
                 if key in ("pool_mean_ns", "pool_p99_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 25000.0:  # Ignore sub-25us micro-jitter on non-RTOS OS
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
-                elif key in ("spsc_mean_ns", "spsc64_mean_ns") and delta_pct > max_lat_rise_pct:
+                elif key in ("spsc_mean_ns", "spsc64_mean_ns", "bip_mean_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 50.0:  # Ignore sub-50ns cache warm-up jitter
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
             else:
