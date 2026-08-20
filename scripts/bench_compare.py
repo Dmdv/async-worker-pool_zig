@@ -70,7 +70,7 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
     print(f"{BOLD}{CYAN}                 AWP HISTORICAL BENCHMARK EVOLUTION TIMELINE                            {RESET}")
     print(f"{BOLD}{CYAN}========================================================================================{RESET}")
     
-    headers = f"{'Milestone / Phase':<30} | {'Commit':<8} | {'Pool Throughput':<15} | {'Pool Mean':<12} | {'p99 Latency':<12} | {'Pure SPSC':<13} | {'64B POD Ring':<13}"
+    headers = f"{'Milestone / Phase':<30} | {'Commit':<8} | {'Pool Throughput':<15} | {'Pool Mean':<12} | {'p99 Latency':<12} | {'Pure SPSC':<13} | {'64B POD Ring':<13} | {'BipRing':<13}"
     print(headers)
     print("-" * len(headers))
 
@@ -83,8 +83,9 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
         pool_p99 = f"{m.get('pool_p99_ns', 0.0) / 1000.0:.2f} µs"
         spsc_tput = f"{m.get('spsc_throughput_mops', 0.0):.1f} M/s"
         spsc64 = f"{m.get('spsc64_throughput_mops', 0.0):.1f} M/s" if "spsc64_throughput_mops" in m else "N/A"
+        bip = f"{m.get('bip_throughput_mops', 0.0):.1f} M/s" if "bip_throughput_mops" in m else "N/A"
 
-        print(f"{name:<30} | {commit:<8} | {pool_tput:<15} | {pool_mean:<12} | {pool_p99:<12} | {spsc_tput:<13} | {spsc64:<13}")
+        print(f"{name:<30} | {commit:<8} | {pool_tput:<15} | {pool_mean:<12} | {pool_p99:<12} | {spsc_tput:<13} | {spsc64:<13} | {bip:<13}")
 
     if current_metrics:
         c_commit, c_branch = get_git_info()
@@ -93,7 +94,8 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
         c_pool_p99 = f"{current_metrics.get('pool_p99_ns', 0.0) / 1000.0:.2f} µs"
         c_spsc_tput = f"{current_metrics.get('spsc_throughput_mops', 0.0):.1f} M/s"
         c_spsc64 = f"{current_metrics.get('spsc64_throughput_mops', 0.0):.1f} M/s" if "spsc64_throughput_mops" in current_metrics else "N/A"
-        print(f"{GREEN}{BOLD}{'Current Run (In-Flight)':<30}{RESET} | {c_commit:<8} | {c_pool_tput:<15} | {c_pool_mean:<12} | {c_pool_p99:<12} | {c_spsc_tput:<13} | {c_spsc64:<13}")
+        c_bip = f"{current_metrics.get('bip_throughput_mops', 0.0):.1f} M/s" if "bip_throughput_mops" in current_metrics else "N/A"
+        print(f"{GREEN}{BOLD}{'Current Run (In-Flight)':<30}{RESET} | {c_commit:<8} | {c_pool_tput:<15} | {c_pool_mean:<12} | {c_pool_p99:<12} | {c_spsc_tput:<13} | {c_spsc64:<13} | {c_bip:<13}")
 
     print(f"{BOLD}{CYAN}========================================================================================{RESET}\n")
 
