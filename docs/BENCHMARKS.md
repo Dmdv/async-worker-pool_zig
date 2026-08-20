@@ -4,6 +4,14 @@ High-performance benchmarks for `async-worker-pool_zig` comparing native Zig 0.1
 
 ---
 
+## Table of Contents
+
+- [1. Comparative Results Table (1,000,000 Messages)](#1-comparative-results-table-1000000-messages)
+- [2. Memory & Allocator Strategy](#2-memory--allocator-strategy)
+- [3. Running the Benchmark](#3-running-the-benchmark)
+
+---
+
 ## 1. Comparative Results Table (1,000,000 Messages)
 
 | Engine | Language | Workload | Throughput | Latency (Mean) | Allocator / Strategy |

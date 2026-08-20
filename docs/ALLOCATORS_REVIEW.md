@@ -4,6 +4,18 @@ This document provides a deep architectural review of memory allocation strategi
 
 ---
 
+## Table of Contents
+
+- [1. The Low-Latency Allocation Problem](#1-the-low-latency-allocation-problem)
+- [2. Deep Evaluation of Zig Allocators](#2-deep-evaluation-of-zig-allocators)
+  - [2.1 `std.heap.ArenaAllocator` (The Lifecycle & Batch Champion)](#21-stdheaparenaallocator-the-lifecycle--batch-champion)
+  - [2.2 `std.heap.FixedBufferAllocator` (Deterministic Static Slabs)](#22-stdheapfixedbufferallocator-deterministic-static-slabs)
+  - [2.3 Pre-allocated Ring Slabs (Zero-Allocation Hot Path)](#23-pre-allocated-ring-slabs-zero-allocation-hot-path)
+- [3. Optimal Multi-Tier Allocator Strategy for `async-worker-pool_zig`](#3-optimal-multi-tier-allocator-strategy-for-async-worker-pool_zig)
+  - [Recommendation](#recommendation)
+
+---
+
 ## 1. The Low-Latency Allocation Problem
 
 In deterministic sub-microsecond systems, traditional dynamic memory allocation (`malloc` / `free`, `GeneralPurposeAllocator`) is strictly prohibited on the hot path due to:

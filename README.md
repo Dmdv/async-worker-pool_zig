@@ -6,6 +6,15 @@ Engineered for High-Frequency Trading (HFT), real-time market data streaming, an
 
 ---
 
+## Table of Contents
+
+- [Key Architectural Features](#key-architectural-features)
+- [Cross-Language Benchmark Comparison](#cross-language-benchmark-comparison-1000000-messages)
+- [Building and Running Benchmarks](#building-and-running-benchmarks)
+- [License](#license)
+
+---
+
 ## Key Architectural Features
 
 - **Multi-Tiered Memory Architecture:** `std.heap.ArenaAllocator` for $O(1)$ pool lifecycle teardown + pre-allocated embedded ring slabs for zero-allocation hot paths. See [`docs/ALLOCATORS_REVIEW.md`](docs/ALLOCATORS_REVIEW.md).
