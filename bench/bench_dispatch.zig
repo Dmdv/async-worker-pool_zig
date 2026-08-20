@@ -463,12 +463,13 @@ pub fn main() !void {
     var signal_count: u64 = 0;
     const reactor_t0 = awp.nowNs();
     for (0..REACTOR_TICKS) |i| {
-        dummy_update.timestamp_ns = awp.nowNs();
+        const now_ns = awp.nowNs();
+        dummy_update.timestamp_ns = now_ns;
         dummy_update.seq = i + 1;
         dummy_update.bid_price = 65000.0 + @as(f64, @floatFromInt(i % 100)) * 0.1;
         dummy_update.ask_price = dummy_update.bid_price + 0.5;
 
-        if (reactor.processTick(dummy_update)) |sig| {
+        if (reactor.processTickWithTs(dummy_update, now_ns)) |sig| {
             if (sig.timestamp_ns >= dummy_update.timestamp_ns) {
                 total_t2t_ns +%= (sig.timestamp_ns - dummy_update.timestamp_ns);
             }
