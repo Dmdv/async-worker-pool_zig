@@ -53,10 +53,7 @@ pub inline fn sleepNs(ns: u64) void {
         .tv_nsec = @intCast(ns % 1_000_000_000),
     };
     var rem: c_time.struct_timespec = undefined;
-    while (true) {
-        const rc = c_time.nanosleep(&req, &rem);
-        if (rc == 0) break;
-        if (std.c.getErrno(rc) != .INTR) break;
+    while (c_time.nanosleep(&req, &rem) != 0) {
         req = rem;
     }
 }
