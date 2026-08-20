@@ -16,7 +16,7 @@ jobs:
       - name: Set up Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.14.0
+          version: master
 
       - name: Zig Code Formatting Check (Linter)
         run: make lint
@@ -39,7 +39,7 @@ jobs:
       - name: Set up Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.14.0
+          version: master
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
       - name: Set up Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.14.0
+          version: master
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
