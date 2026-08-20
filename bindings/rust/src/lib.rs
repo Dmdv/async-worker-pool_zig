@@ -181,7 +181,16 @@ impl<'a> ClaimGuard<'a> {
 
 impl<'a> Drop for ClaimGuard<'a> {
     fn drop(&mut self) {
-        // Safe discard on drop
+        if !self.committed {
+            // Auto-commit a no-op frame to prevent stalling the sequence ring
+            unsafe {
+                let f = &mut *self.claim.frame;
+                f.payload_len = 0;
+                f.flags = 0x8000_0000; // AWP_FLAG_DROPPED
+                let _ = sys::awp_zig_commit(self.pool.handle, &self.claim);
+            }
+            self.committed = true;
+        }
     }
 }
 

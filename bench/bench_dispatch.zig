@@ -6,7 +6,7 @@ const c_stdio = @cImport({
 });
 
 const NUM_MSGS = 1_000_000;
-const NUM_WORKERS = 32;
+const NUM_WORKERS = 4;
 const QUEUE_CAP = 2048;
 const MSGS_PER_WORKER = (NUM_MSGS / NUM_WORKERS) * 2;
 
@@ -168,11 +168,13 @@ pub fn main() !void {
     const SpscContext = struct {
         ring: *Spsc,
         n: usize,
+        ready: std.atomic.Value(bool),
         done: std.atomic.Value(bool),
         csum: std.atomic.Value(u64),
 
         fn consumerThread(ctx: *@This()) void {
             awp.pinToPerformanceCores();
+            ctx.ready.store(true, .release);
             var got: usize = 0;
             var sum: u64 = 0;
             while (got < ctx.n) {
@@ -191,12 +193,16 @@ pub fn main() !void {
     var spsc_ctx = SpscContext{
         .ring = &spsc,
         .n = NUM_MSGS,
+        .ready = std.atomic.Value(bool).init(false),
         .done = std.atomic.Value(bool).init(false),
         .csum = std.atomic.Value(u64).init(0),
     };
 
-    const s_t0 = awp.nowNs();
     const cons_thread = try std.Thread.spawn(.{}, SpscContext.consumerThread, .{&spsc_ctx});
+    while (!spsc_ctx.ready.load(.acquire)) {
+        std.atomic.spinLoopHint();
+    }
+    const s_t0 = awp.nowNs();
 
     for (0..NUM_MSGS) |_| {
         while (!spsc.tryPush(&raw_frame)) {
@@ -229,7 +235,10 @@ pub fn main() !void {
             const h = self.head.load(.monotonic);
             if (h - self.cached_tail >= Cap) {
                 self.cached_tail = self.tail.load(.acquire);
-                if (h - self.cached_tail >= Cap) return false;
+                if (h - self.cached_tail >= Cap) {
+                    @branchHint(.unlikely);
+                    return false;
+                }
             }
             self.slots[h & Mask] = val;
             self.head.store(h + 1, .release);
@@ -240,7 +249,10 @@ pub fn main() !void {
             const t = self.tail.load(.monotonic);
             if (self.cached_head == t) {
                 self.cached_head = self.head.load(.acquire);
-                if (self.cached_head == t) return null;
+                if (self.cached_head == t) {
+                    @branchHint(.unlikely);
+                    return null;
+                }
             }
             const val = self.slots[t & Mask];
             self.tail.store(t + 1, .release);
@@ -254,10 +266,12 @@ pub fn main() !void {
     const PtrCtx = struct {
         ring: *PtrSpsc,
         n: usize,
+        ready: std.atomic.Value(bool),
         done: std.atomic.Value(bool),
 
         fn runConsumer(ctx: *@This()) void {
             awp.pinToPerformanceCores();
+            ctx.ready.store(true, .release);
             var got: usize = 0;
             while (got < ctx.n) {
                 if (ctx.ring.pop()) |_| {
@@ -273,11 +287,15 @@ pub fn main() !void {
     var ptr_ctx = PtrCtx{
         .ring = &ptr_ring,
         .n = NUM_MSGS,
+        .ready = std.atomic.Value(bool).init(false),
         .done = std.atomic.Value(bool).init(false),
     };
 
-    const p_t0 = awp.nowNs();
     const ptr_cons_thread = try std.Thread.spawn(.{}, PtrCtx.runConsumer, .{&ptr_ctx});
+    while (!ptr_ctx.ready.load(.acquire)) {
+        std.atomic.spinLoopHint();
+    }
+    const p_t0 = awp.nowNs();
 
     for (0..NUM_MSGS) |i| {
         while (!ptr_ring.push(i)) {

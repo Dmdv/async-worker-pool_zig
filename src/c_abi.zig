@@ -62,6 +62,7 @@ pub const DynamicRing = struct {
                     .pos = pos,
                 };
             } else if (dif < 0) {
+                @branchHint(.unlikely);
                 return null;
             } else {
                 pos = self.enqueue_pos.load(.monotonic);
@@ -88,6 +89,7 @@ pub const DynamicRing = struct {
             cell.sequence.store(pos + self.capacity, .release);
             return true;
         } else {
+            @branchHint(.unlikely);
             return false;
         }
     }
@@ -135,7 +137,13 @@ pub const DynamicPool = struct {
         };
 
         for (0..num_workers) |i| {
-            self.threads[i] = try std.Thread.spawn(.{}, workerLoop, .{ self, i });
+            self.threads[i] = std.Thread.spawn(.{}, workerLoop, .{ self, i }) catch |err| {
+                self.running.store(false, .release);
+                for (self.threads[0..i]) |t| {
+                    t.join();
+                }
+                return err;
+            };
         }
 
         return self;
@@ -244,6 +252,7 @@ export fn awp_zig_submit(
     flags: u32,
 ) callconv(.c) c_int {
     if (pool_ptr == null) return -22;
+    if (payload == null and payload_len > 0) return -22; // EINVAL
     const pool: *DynamicPool = @ptrCast(@alignCast(pool_ptr.?));
 
     // Simple FNV-1a hash
@@ -260,30 +269,29 @@ export fn awp_zig_submit(
 
     const shard: u32 = @truncate(hash % pool.num_workers);
 
-    while (true) {
-        if (pool.claim(shard)) |c| {
-            const f = c.frame;
-            const f_feed_len = @min(feed_slice.len, root.AWP_FEED_MAX);
-            const f_sym_len = @min(sym_slice.len, root.AWP_SYMBOL_MAX);
-            const f_pay_len = @min(payload_len, root.AWP_PAYLOAD_MAX);
+    if (pool.claim(shard)) |c| {
+        const f = c.frame;
+        const f_feed_len = @min(feed_slice.len, root.AWP_FEED_MAX);
+        const f_sym_len = @min(sym_slice.len, root.AWP_SYMBOL_MAX);
+        const f_pay_len = if (payload != null) @min(payload_len, root.AWP_PAYLOAD_MAX) else 0;
 
-            @memcpy(f.feed[0..f_feed_len], feed_slice[0..f_feed_len]);
-            f.feed[f_feed_len] = 0;
+        @memcpy(f.feed[0..f_feed_len], feed_slice[0..f_feed_len]);
+        f.feed[f_feed_len] = 0;
 
-            @memcpy(f.symbol[0..f_sym_len], sym_slice[0..f_sym_len]);
-            f.symbol[f_sym_len] = 0;
+        @memcpy(f.symbol[0..f_sym_len], sym_slice[0..f_sym_len]);
+        f.symbol[f_sym_len] = 0;
 
-            if (payload != null and f_pay_len > 0) {
-                const src: [*]const u8 = @ptrCast(payload.?);
-                @memcpy(f.payload[0..f_pay_len], src[0..f_pay_len]);
-            }
-            f.payload_len = f_pay_len;
-            f.flags = flags;
-
-            pool.commit(c);
-            return 0;
-        } else {
-            std.atomic.spinLoopHint();
+        if (payload != null and f_pay_len > 0) {
+            const src: [*]const u8 = @ptrCast(payload.?);
+            @memcpy(f.payload[0..f_pay_len], src[0..f_pay_len]);
         }
+        f.payload_len = f_pay_len;
+        f.flags = flags;
+
+        pool.commit(c);
+        return 0;
+    } else {
+        @branchHint(.unlikely);
+        return -11; // EAGAIN / Queue Full (Non-blocking HFT semantics)
     }
 }
