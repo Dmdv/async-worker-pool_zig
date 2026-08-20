@@ -23,6 +23,7 @@ Engineered for High-Frequency Trading (HFT), real-time market data streaming, an
 - **Phase 2 Generic 64-Byte POD Cacheline SPSC Ring:** `comptime SpscRing(T, capacity)` specialized for 64-byte market data structures (`BookUpdate64`, `Trade64`), slashing memory bandwidth by **98.5%** and achieving **28.54 M ops/sec** at **35.03 ns** hop latency.
 - **Phase 3 Variable-Length Zero-Copy Bipartite Ring (`BipRing` & `BipBuffer`):** Lock-free bipartite circular memory arena coupled with a 16-byte `PacketDescriptor` SPSC ring. Streams arbitrary packet sizes (64B to 1500B MTU) with 0 memory fragmentation and 0 boundary-split copies, delivering **14.21 M pkts/sec** at **70.38 ns** latency (~8.52 GB/s).
 - **Phase 4 Hybrid Fast-Path Trading Reactor & Off-Path Pipeline:** Single-threaded core (`TradingReactor`) emitting 64-byte `OrderSignal64` in **247.78 ns** with non-blocking SPSC fan-out across 3 concurrent background workers (Risk, Audit, Telemetry).
+- **Phase 5 End-to-End Tick-to-Execution Engine & Telemetry:** 5-segment loopback trading loop (Ingress, Tick-to-Order `t2o` in **19.86 ns**, Order-to-Wire `o2w` in **20.20 ns**, Mock Match Engine `w2a` in **490.18 ns**, and Full Round-Trip `e2e` in **549.17 ns** at **1.75 M ops/s**) with directional position accounting. See [`docs/primitives/e2e-trading-loop.md`](docs/primitives/e2e-trading-loop.md) and [`docs/PHASE5_E2E_SPECIFICATION.md`](docs/PHASE5_E2E_SPECIFICATION.md).
 - **Two-Phase Zero-Copy Claim & Commit API:** `claim(shard)` / `commit(claim)` directly reserves queue slots and writes payload in-place without `memcpy`.
 - **Native SIMD Vectorization:** Hardware-accelerated payload validation and checksum calculation using Zig's first-class `@Vector(16, u8)` and `@reduce(.Add, ...)` primitives (auto-vectorized to ARM NEON / AVX-512).
 - **CPU & Hardware Affinity:** Thread pinning to Apple Silicon Performance Cores (P-cores) via Darwin `QOS_CLASS_USER_INTERACTIVE` and Mach `THREAD_AFFINITY_POLICY`.
@@ -75,6 +76,21 @@ Decouples critical zero-hop order execution (~247 ns) from concurrent background
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Trading Reactor Fast-Path** | Zig 0.16 | `BookUpdate64` ➔ `OrderSignal64` | **4.04 M ticks/s** | **247.78 ns** (0.248 µs) | **2,000,000 orders** (3 threads) |
 | **`awp-zig-rs` Reactor + Pipeline** | Rust / Zig | `BookUpdate64` ➔ `OrderSignal64` | **3.95 M ticks/s** | **253.16 ns** (0.253 µs) | **2,000,000 orders** (3 threads) |
+
+---
+
+### 5. Full-Loop Tick-to-Execution Engine (Phase 5: E2E Telemetry)
+Measures the complete 5-segment round trip: Market Ingress ➔ `t2o` Decision ➔ `o2w` Wire Framing ➔ `w2a` Matching Loopback ➔ Portfolio Fill & State Update.
+
+| Segment / Metric | Language | Measured Mean | p50 | p99 | Throughput | Production SLA |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Tick-to-Order (`t2o`)** | Zig 0.16 | **`19.86 ns`** | $0\text{ ns}$ | $1.0\text{ µs}$ | — | $\le 35.0\text{ ns}$ 🟢 |
+| **Order-to-Wire (`o2w`)** | Zig 0.16 | **`20.20 ns`** | $0\text{ ns}$ | $1.0\text{ µs}$ | — | $\le 50.0\text{ ns}$ 🟢 |
+| **Wire-to-Ack (`w2a` cross-core)** | Zig 0.16 | **`490.18 ns`** | $0\text{ ns}$ | $1.0\text{ µs}$ | — | $\le 600.0\text{ ns}$ 🟢 |
+| **E2E Full Round-Trip (`e2e`)** | Zig 0.16 | **`549.17 ns`** | $1.0\text{ µs}$ | $1.0\text{ µs}$ | **`1.75 M ops/s`** | $\le 600.0\text{ ns}$ 🟢 |
+| **`awp-zig-rs` E2E Loopback** | Rust / Zig | **`555.20 ns`** | $1.0\text{ µs}$ | $1.0\text{ µs}$ | **`1.72 M ops/s`** | $\le 600.0\text{ ns}$ 🟢 |
+
+---
 
 ### Detailed Tail Latencies Breakdown (1,000,000 Messages)
 
