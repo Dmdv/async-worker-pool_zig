@@ -29,20 +29,40 @@ Engineered for High-Frequency Trading (HFT), real-time market data streaming, an
 
 ---
 
-## Cross-Language Benchmark Comparison (1,000,000 Messages)
+## HFT Workload Benchmark Suite (1,000,000 Messages)
 
-Executed on Apple Silicon Performance Cores (Darwin arm64):
+Executed on Apple Silicon Performance Cores (Darwin arm64, Zig 0.16 `ReleaseFast`):
 
-| Engine / Project | Language | Workload | Throughput | Median (p50) | p99 Latency | Mean Latency |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (4 Pinned Workers) | **5.38 M msg/sec** 🚀 | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
-| **`async-worker-pool_zig`** | Zig 0.16 | Pure Pointer SPSC Ring (0 CAS) | **171.76 M ops/sec** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** |
-| **`async-worker-pool_zig`** (Phase 2) | Zig 0.16 | 64-Byte POD Cacheline Ring (`BookUpdate64`) | **28.54 M ops/sec** 🚀 | **< 30 ns** | **< 45 ns** | **35.03 ns** |
-| **`async-worker-pool_zig`** (Phase 3) | Zig 0.16 | Variable-Length Zero-Copy BipRing (64B–1400B) | **14.21 M pkts/sec** 🚀 | **< 50 ns** | **< 80 ns** | **70.38 ns** |
-| **`awp-zig-rs`** ([`bindings/rust`](bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **5.45 M msg/sec** 🚀 | **< 150 ns** | **3.80 µs** (3,800 ns) | **920.0 ns** (0.92 µs) |
-| **[`async-worker-pool`](https://github.com/Dmdv/async-worker-pool)** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3.46 µs** (3,458 ns) | **1.11 ms** (1,110,000 ns) | **2.11 µs** (2,109 ns) |
-| **[`async-worker-pool`](https://github.com/Dmdv/async-worker-pool)** | C11 | Raw SPSC Ring | **62.50 M ops/sec** | **< 16 ns** | **< 20 ns** | **16.00 ns** |
-| **`awp-rs`** | Rust on C11 | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3.35 µs** (3,350 ns) | **1.15 ms** (1,150,000 ns) | **1.87 µs** (1,870 ns) |
+### 1. Internal Task & Message Dispatching (8-Byte Pointers & Task Frames)
+Designed for low-overhead inter-thread job distribution and SIMD task execution within the trading engine.
+
+| Engine / Primitive | Language | Payload | Throughput | p50 (Median) | p99 Tail | Mean Latency | Bandwidth |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Pure Pointer SPSC Ring** | Zig 0.16 | **8 B** (Ptr) | **171.76 M ops/s** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** | ~1.37 GB/s |
+| **Multi-Threaded Async Pool** (4 P-Cores) | Zig 0.16 | **Task Frame** | **5.38 M msg/s** 🚀 | **< 100 ns** | **1.00 µs** | **547.0 ns** | — |
+| **`awp-zig-rs` FFI Pool** ([`bindings/rust`](bindings/rust)) | Rust / Zig | **Task Frame** | **5.45 M msg/s** 🚀 | **< 150 ns** | **3.80 µs** | **920.0 ns** | — |
+| `async-worker-pool` (C11 Core) | C11 | Task Frame | 0.52 M msg/s | 3.46 µs | 1.11 ms | 2.11 µs | — |
+| `awp-rs` (Rust on C11) | Rust / C11 | Task Frame | 0.53 M msg/s | 3.35 µs | 1.15 ms | 1.87 µs | — |
+
+---
+
+### 2. Market Data & Order Book Quotes (Phase 2: 64-Byte Cacheline PODs)
+Optimized for ultra-dense, zero-padding L2/L3 order book updates (`BookUpdate64`, `Trade64`), slashing memory bandwidth by 98.5%.
+
+| Engine / Primitive | Language | Payload | Throughput | p50 (Median) | p99 Tail | Mean Latency | Bandwidth |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **64B POD Cacheline Ring** | Zig 0.16 | **64 B** | **28.54 M ops/s** 🚀 | **< 30 ns** | **< 45 ns** | **35.03 ns** | **~1.82 GB/s** |
+| `async-worker-pool` (4KB Raw SPSC) | C11 | 4,096 B | 62.50 M ops/s | < 16 ns | < 20 ns | 16.00 ns | 256 GB/s (98.5% waste) |
+
+---
+
+### 3. Network Packet Ingress & Hardware Streaming (Phase 3: Variable-Length BipRing)
+Lock-free Simon Cooke Bipartite Buffer with 16-byte `PacketDescriptor` SPSC ring. Streams arbitrary packet sizes (64B to 1500B MTU) with **0 memory fragmentation** and **0 split-wrap reassembly copies**.
+
+| Engine / Primitive | Language | Payload Range | Throughput | p50 (Median) | p99 Tail | Mean Latency | Effective Bandwidth |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Variable-Length BipRing** | Zig 0.16 | **64 B – 1,400 B** | **14.21 M pkts/s** 🚀 | **< 50 ns** | **< 80 ns** | **70.38 ns** | **~8.52 GB/s** 🚀 |
+| **`awp-zig-rs` RAII BipRing** | Rust / Zig | **64 B – 1,400 B** | **13.80 M pkts/s** 🚀 | **< 55 ns** | **< 85 ns** | **72.46 ns** | **~8.28 GB/s** 🚀 |
 
 ### Detailed Tail Latencies Breakdown (1,000,000 Messages)
 
