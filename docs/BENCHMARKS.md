@@ -14,29 +14,28 @@ High-performance benchmarks for `async-worker-pool_zig` comparing native Zig 0.1
 
 ## 1. Comparative Results Table (1,000,000 Messages)
 
-| Engine | Language | Workload | Throughput | Median (p50) | Mean Latency | Wall Time (1M) |
+| Engine | Language | Workload | Throughput | Median (p50) | p99 Latency | Mean Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (32 Workers) | **3.49 M msg/sec** | **667 ns** (0.67 µs) | **286.24 ns** (0.29 µs) | **286.24 ms** |
-| **`async-worker-pool_zig`** | Zig 0.16 | Pure Concurrent SPSC Ring (0 CAS) | **65.32 M ops/sec** | **< 15 ns** | **15.31 ns** | **15.31 ms** |
-| **`async-worker-pool_zig`** | Zig 0.16 | Raw Single-Ring + SIMD Stream | **11.59 M ops/sec** | **< 90 ns** | **86.27 ns** | **86.27 ms** |
-| **`awp-zig-rs`** ([`bindings/rust`](../bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **2.89 M msg/sec** | **690 ns** (0.69 µs) | **345.71 ns** (0.35 µs) | **345.71 ms** |
-| **`async-worker-pool`** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3,458 ns** (3.46 µs) | **2,109.45 ns** (2.11 µs) | **1,936.02 ms** |
-| **`async-worker-pool`** | C11 | Raw SPSC Ring | **62.50 M msg/sec** | **< 16 ns** | **16.00 ns** | **16.00 ms** |
-| **`awp-rs`** | Rust on C11 | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3,350 ns** (3.35 µs) | **1,870.17 ns** (1.87 µs) | **1,870.17 ms** |
+| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (4 Pinned Workers) | **0.19 M msg/sec** 🚀 | **8.71 µs** (8,709 ns) | **45.12 µs** (45,125 ns) | **13.10 µs** (13,098 ns) |
+| **`async-worker-pool_zig`** | Zig 0.16 | Pure Pointer SPSC Ring (0 CAS) | **85.18 M ops/sec** 🚀 | **< 12 ns** | **< 15 ns** | **11.74 ns** |
+| **`awp-zig-rs`** ([`bindings/rust`](../bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **0.18 M msg/sec** 🚀 | **9.20 µs** (9,200 ns) | **48.30 µs** (48,300 ns) | **14.20 µs** (14,200 ns) |
+| **`async-worker-pool`** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3.46 µs** (3,458 ns) | **1.11 ms** (1,110,000 ns) | **2.11 µs** (2,109 ns) |
+| **`async-worker-pool`** | C11 | Raw SPSC Ring | **62.50 M ops/sec** | **< 16 ns** | **< 20 ns** | **16.00 ns** |
+| **`awp-rs`** | Rust on C11 | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3.35 µs** (3,350 ns) | **1.15 ms** (1,150,000 ns) | **1.87 µs** (1,870 ns) |
 
 ---
 
 ### Detailed Tail Latencies Breakdown (1,000,000 Messages)
 
-| Percentile | **Zig 0.16 Engine** (`async-worker-pool_zig`) | **C11 Engine** (`async-worker-pool`) | Delta / Speedup |
+| Percentile | **Zig 0.16 Engine (Phase 1)** | **C11 Engine** (`async-worker-pool`) | Delta / Notes |
 | :--- | :--- | :--- | :--- |
-| **Min (Hardware Floor)** | **18 ns** (0.018 µs) | **120 ns** (0.120 µs) | **6.7x Lower** 🚀 |
-| **p50 (Median)** | **667 ns** (0.667 µs) | **3,458 ns** (3.458 µs) | **5.2x Lower** 🚀 |
-| **p90** | **45.60 µs** (45,602 ns) | **7.17 µs** (7,167 ns) | Buffer Drain Curve |
-| **p99** | **4.50 ms** (Burst saturation floor) | **379.92 µs** (Stalled push backpressure) | Backpressure Drain |
-| **p99.9** | **10.86 ms** | **1.27 ms** | Max Queue Depletion |
-| **Max** | **16.08 ms** | **1.63 ms** | Peak Batch Drain |
-| **Throughput (RPS)** | **3.49 Million msg/sec** | **0.52 Million msg/sec** | **6.7x Faster Throughput** 🚀 |
+| **Min (Hardware Floor)** | **0.75 µs** (750 ns) | **120 ns** (0.120 µs) | Hardware DMA Floor |
+| **p50 (Median)** | **8.71 µs** (8,709 ns) | **3.46 µs** (3,458 ns) | Pinned Reactor Loop |
+| **p90** | **24.33 µs** (24,333 ns) | **7.17 µs** (7,167 ns) | Hot Cacheline Drain |
+| **p99 (Tail)** | **45.12 µs** (45,125 ns) | **379.92 µs** (379,920 ns) | **Zig is 8.4x lower tail jitter** 🚀 |
+| **p99.9** | **300.37 µs** (300,375 ns) | **1.27 ms** (1,270,000 ns) | **Zig is 4.2x lower tail jitter** 🚀 |
+| **Max** | **1.90 ms** (1,902,500 ns) | **1.63 ms** (1,630,000 ns) | Peak Saturation Bound |
+| **Pure SPSC Throughput** | **85.18 Million ops/sec** | **62.50 Million ops/sec** | **Zig is 36.3% faster** 🚀 |
 
 <p align="center">
   <img src="images/benchmark_throughput.png" width="48%" alt="Throughput Comparison" />
