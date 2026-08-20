@@ -631,7 +631,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
     return struct {
         const Self = @This();
 
-        buffer: []align(64) u8,
+        buffer: []u8,
 
         // Producer State (Exclusively written by Producer - Cacheline 0)
         write_a: std.atomic.Value(usize) align(64),
@@ -649,7 +649,7 @@ pub fn BipBuffer(comptime capacity: usize) type {
         slab: ?*HftMemorySlab,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
-            const buf = try allocator.allocWithOptions(u8, capacity, std.mem.Alignment.@"64", null);
+            const buf = try allocator.alloc(u8, capacity);
             return Self{
                 .buffer = buf,
                 .write_a = std.atomic.Value(usize).init(0),
@@ -852,7 +852,7 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
         const Self = @This();
         pub const DescRing = SpscRing(PacketDescriptor, descriptor_capacity);
 
-        buffer: []align(64) u8,
+        buffer: []u8,
         desc_ring: DescRing,
 
         // Producer State (Cacheline 0 - align(64))
@@ -868,7 +868,7 @@ pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: us
         desc_slab: ?*HftMemorySlab,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
-            const buf = try allocator.allocWithOptions(u8, buffer_capacity, std.mem.Alignment.@"64", null);
+            const buf = try allocator.alloc(u8, buffer_capacity);
             return Self{
                 .buffer = buf,
                 .desc_ring = try DescRing.init(allocator),

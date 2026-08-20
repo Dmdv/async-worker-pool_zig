@@ -319,7 +319,7 @@ export fn awp_zig_submit(
 
 pub const DynamicBip = struct {
     allocator: std.mem.Allocator,
-    buffer: []align(64) u8,
+    buffer: []u8,
     write_a: std.atomic.Value(usize) align(64),
     write_b: std.atomic.Value(usize),
     is_b_active: std.atomic.Value(bool),
@@ -336,7 +336,7 @@ pub const DynamicBip = struct {
         const self = try allocator.create(DynamicBip);
         errdefer allocator.destroy(self);
 
-        const buf = try allocator.allocWithOptions(u8, capacity, std.mem.Alignment.@"64", null);
+        const buf = try allocator.alloc(u8, capacity);
         errdefer allocator.free(buf);
 
         self.* = .{
@@ -527,7 +527,7 @@ pub export fn awp_zig_bip_consume(bip_ptr: ?*anyopaque, size: usize) callconv(.c
 pub fn DynamicSpscRing(comptime T: type) type {
     return struct {
         const Self = @This();
-        items: []align(64) T,
+        items: []T,
         head: std.atomic.Value(usize) align(64),
         tail: std.atomic.Value(usize) align(64),
         cached_head: usize,
@@ -538,7 +538,7 @@ pub fn DynamicSpscRing(comptime T: type) type {
 
         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
             if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return error.InvalidCapacity;
-            const items = try allocator.allocWithOptions(T, capacity, std.mem.Alignment.@"64", null);
+            const items = try allocator.alloc(T, capacity);
             return Self{
                 .items = items,
                 .head = std.atomic.Value(usize).init(0),
@@ -588,7 +588,7 @@ pub fn DynamicSpscRing(comptime T: type) type {
 
 pub const DynamicBipRing = struct {
     allocator: std.mem.Allocator,
-    buffer: []align(64) u8,
+    buffer: []u8,
     desc_ring: DynamicSpscRing(root.PacketDescriptor),
     write_offset: std.atomic.Value(usize) align(64),
     cached_read_offset: usize,
@@ -603,7 +603,7 @@ pub const DynamicBipRing = struct {
         const self = try allocator.create(DynamicBipRing);
         errdefer allocator.destroy(self);
 
-        const buf = try allocator.allocWithOptions(u8, buffer_capacity, std.mem.Alignment.@"64", null);
+        const buf = try allocator.alloc(u8, buffer_capacity);
         errdefer allocator.free(buf);
 
         const desc_ring = try DynamicSpscRing(root.PacketDescriptor).init(allocator, desc_capacity);
