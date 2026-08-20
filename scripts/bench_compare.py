@@ -70,7 +70,7 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
     print(f"{BOLD}{CYAN}                 AWP HISTORICAL BENCHMARK EVOLUTION TIMELINE                            {RESET}")
     print(f"{BOLD}{CYAN}========================================================================================{RESET}")
     
-    headers = f"{'Milestone / Phase':<30} | {'Commit':<8} | {'Pool Tput':<11} | {'Pool Lat':<10} | {'Pure SPSC':<11} | {'64B POD':<11} | {'BipRing':<11} | {'Reactor':<12}"
+    headers = f"{'Milestone / Phase':<30} | {'Commit':<8} | {'Pool Tput':<11} | {'Pool Lat':<10} | {'Pure SPSC':<11} | {'64B POD':<11} | {'BipRing':<11} | {'Reactor':<12} | {'E2E Loop':<12}"
     print(headers)
     print("-" * len(headers))
 
@@ -84,8 +84,9 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
         spsc64 = f"{m.get('spsc64_throughput_mops', 0.0):.1f} M/s" if "spsc64_throughput_mops" in m else "N/A"
         bip = f"{m.get('bip_throughput_mops', 0.0):.1f} M/s" if "bip_throughput_mops" in m else "N/A"
         reactor = f"{m.get('reactor_throughput_mps', 0.0):.1f} M/s" if "reactor_throughput_mps" in m else "N/A"
+        e2e = f"{m.get('e2e_throughput_mps', 0.0):.1f} M/s" if "e2e_throughput_mps" in m else "N/A"
 
-        print(f"{name:<30} | {commit:<8} | {pool_tput:<11} | {pool_mean:<10} | {spsc_tput:<11} | {spsc64:<11} | {bip:<11} | {reactor:<12}")
+        print(f"{name:<30} | {commit:<8} | {pool_tput:<11} | {pool_mean:<10} | {spsc_tput:<11} | {spsc64:<11} | {bip:<11} | {reactor:<12} | {e2e:<12}")
 
     if current_metrics:
         c_commit, c_branch = get_git_info()
@@ -95,11 +96,22 @@ def print_timeline_history(history_file: str, current_metrics: Optional[Dict[str
         c_spsc64 = f"{current_metrics.get('spsc64_throughput_mops', 0.0):.1f} M/s" if "spsc64_throughput_mops" in current_metrics else "N/A"
         c_bip = f"{current_metrics.get('bip_throughput_mops', 0.0):.1f} M/s" if "bip_throughput_mops" in current_metrics else "N/A"
         c_reactor = f"{current_metrics.get('reactor_throughput_mps', 0.0):.1f} M/s" if "reactor_throughput_mps" in current_metrics else "N/A"
-        print(f"{GREEN}{BOLD}{'Current Run (In-Flight)':<30}{RESET} | {c_commit:<8} | {c_pool_tput:<11} | {c_pool_mean:<10} | {c_spsc_tput:<11} | {c_spsc64:<11} | {c_bip:<11} | {c_reactor:<12}")
+        c_e2e = f"{current_metrics.get('e2e_throughput_mps', 0.0):.1f} M/s" if "e2e_throughput_mps" in current_metrics else "N/A"
+        print(f"{GREEN}{BOLD}{'Current Run (In-Flight)':<30}{RESET} | {c_commit:<8} | {c_pool_tput:<11} | {c_pool_mean:<10} | {c_spsc_tput:<11} | {c_spsc64:<11} | {c_bip:<11} | {c_reactor:<12} | {c_e2e:<12}")
 
     print(f"{BOLD}{CYAN}========================================================================================{RESET}\n")
 
-def compare_benchmarks(baseline_file: str, current_file: str, history_file: str, max_tput_drop_pct: float, max_lat_rise_pct: float, warn_only: bool = False, show_history: bool = True) -> int:
+def compare_benchmarks(
+    baseline_file: str,
+    current_file: str,
+    history_file: str,
+    max_tput_drop_pct: float,
+    max_lat_rise_pct: float,
+    max_t2o_ns: float = 35.0,
+    max_e2e_ns: float = 550.0,
+    warn_only: bool = False,
+    show_history: bool = True,
+) -> int:
     base = load_json(baseline_file)
     curr = load_json(current_file)
 
@@ -128,6 +140,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("spsc64_throughput_mops", "64B POD Ring (M ops/s)", True),
         ("bip_throughput_mops", "BipBuffer (M pkts/s)", True),
         ("reactor_throughput_mps", "Reactor (M ticks/s)", True),
+        ("e2e_throughput_mps", "E2E Full-Loop (M ops/s)", True),
     ]
 
     for key, label, higher_is_better in tput_metrics:
@@ -159,6 +172,13 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("spsc64_mean_ns", "64B POD Latency (ns)", False),
         ("bip_mean_ns", "BipBuffer Latency (ns)", False),
         ("reactor_mean_ns", "Reactor Latency (ns)", False),
+        ("e2e_t2o_mean_ns", "Tick-to-Order Mean (ns)", False),
+        ("e2e_o2w_mean_ns", "Order-to-Wire Mean (ns)", False),
+        ("e2e_w2a_mean_ns", "Wire-to-Ack Mean (ns)", False),
+        ("e2e_roundtrip_mean_ns", "E2E Round-Trip Mean (ns)", False),
+        ("e2e_roundtrip_p99_ns", "E2E Round-Trip p99 (ns)", False),
+        ("e2e_roundtrip_p9999_ns", "E2E Round-Trip p99.99 (ns)", False),
+        ("e2e_roundtrip_max_ns", "E2E Round-Trip Max (ns)", False),
     ]
 
     for key, label, higher_is_better in lat_metrics:
@@ -174,11 +194,17 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
                 if key in ("pool_mean_ns", "pool_p99_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 25000.0:  # Ignore sub-25us micro-jitter on non-RTOS OS
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
-                elif key in ("spsc_mean_ns", "spsc64_mean_ns", "bip_mean_ns", "reactor_mean_ns") and delta_pct > max_lat_rise_pct:
+                elif key in ("spsc_mean_ns", "spsc64_mean_ns", "bip_mean_ns", "reactor_mean_ns", "e2e_roundtrip_mean_ns") and delta_pct > max_lat_rise_pct:
                     if (c_val - b_val) > 50.0:  # Ignore sub-50ns cache warm-up jitter
                         regressions.append(f"{label}: increased by {delta_pct:.2f}% (limit: {max_lat_rise_pct:.1f}%)")
             else:
                 print(f"{label:<25} | {'N/A (New)':<14} | {c_val:<14.2f} | {GREEN}✨ NEW FEATURE{RESET}")
+
+    # 3. Hard HFT SLA tripwires (parameterized)
+    if "e2e_t2o_mean_ns" in curr and float(curr["e2e_t2o_mean_ns"]) > max_t2o_ns:
+        regressions.append(f"Tick-to-Order SLA breached: {curr['e2e_t2o_mean_ns']:.1f}ns > {max_t2o_ns:.1f}ns limit")
+    if "e2e_roundtrip_mean_ns" in curr and float(curr["e2e_roundtrip_mean_ns"]) > max_e2e_ns:
+        regressions.append(f"E2E Round-Trip SLA breached: {curr['e2e_roundtrip_mean_ns']:.1f}ns > {max_e2e_ns:.1f}ns limit")
 
     print("========================================================================")
 
@@ -249,6 +275,8 @@ def main():
     parser.add_argument("--history-file", default="benchmarks/history.json", help="Path to history.json ledger")
     parser.add_argument("--max-tput-drop", type=float, default=50.0, help="Max allowable throughput drop percentage (default: 50.0%%)")
     parser.add_argument("--max-lat-rise", type=float, default=200.0, help="Max allowable latency increase percentage (default: 200.0%%)")
+    parser.add_argument("--max-t2o-ns", type=float, default=35.0, help="Max allowable Tick-to-Order mean latency (default: 35.0 ns)")
+    parser.add_argument("--max-e2e-ns", type=float, default=550.0, help="Max allowable E2E Round-Trip mean latency (default: 550.0 ns)")
     parser.add_argument("--warn-only", action="store_true", help="Print warning instead of failing build")
     parser.add_argument("--no-history", action="store_false", dest="show_history", default=True, help="Disable history evolution timeline output")
     parser.add_argument("--record", action="store_true", help="Record current benchmark into history ledger and set as new baseline")
@@ -265,7 +293,17 @@ def main():
             sys.exit(1)
 
         # Always run regression check before recording milestone into baseline
-        rc = compare_benchmarks(args.baseline, args.current, args.history_file, args.max_tput_drop, args.max_lat_rise, args.warn_only, args.show_history)
+        rc = compare_benchmarks(
+            args.baseline,
+            args.current,
+            args.history_file,
+            args.max_tput_drop,
+            args.max_lat_rise,
+            args.max_t2o_ns,
+            args.max_e2e_ns,
+            args.warn_only,
+            args.show_history,
+        )
         if rc != 0 and not args.force:
             print(f"{RED}Error: Cannot record degraded benchmark milestone into baseline without --force.{RESET}", file=sys.stderr)
             sys.exit(rc)
@@ -273,7 +311,17 @@ def main():
         record_milestone(args.current, args.history_file, args.baseline, args.id, args.name, args.desc, args.force)
         sys.exit(0)
 
-    rc = compare_benchmarks(args.baseline, args.current, args.history_file, args.max_tput_drop, args.max_lat_rise, args.warn_only, args.show_history)
+    rc = compare_benchmarks(
+        args.baseline,
+        args.current,
+        args.history_file,
+        args.max_tput_drop,
+        args.max_lat_rise,
+        args.max_t2o_ns,
+        args.max_e2e_ns,
+        args.warn_only,
+        args.show_history,
+    )
     sys.exit(rc)
 
 if __name__ == "__main__":

@@ -162,7 +162,32 @@ flowchart TD
 
 ---
 
-### Phase 5: Kernel Bypass Ingress Integration & NUMA Pinning
+### Phase 5: End-to-End Tick-to-Execution Engine & Full-Loop Telemetry — `[COMPLETED]` (See full specification: [`docs/PHASE5_E2E_SPECIFICATION.md`](PHASE5_E2E_SPECIFICATION.md))
+
+- **Objective:** Measure and optimize the complete end-to-end trading loop with nanosecond precision: from market data ingress to order signal generation, wire encoding, simulated exchange matching, acknowledgment ingress, and portfolio position accounting.
+- **Architecture & Primitives:**
+  1. **5-Segment Pipeline Breakdown:**
+     - `Segment A`: Ingress Parsing (`BookUpdate64`).
+     - `Segment B`: Tick-to-Order Decision (`t2o`, $\le 30\text{ ns}$ SLA).
+     - `Segment C`: Order-to-Wire Serialization (`o2w`, $\le 50\text{ ns}$ SLA).
+     - `Segment D`: Mock Match Engine Loopback (`w2a`, $\le 150\text{ ns}$ SLA).
+     - `Segment E`: Ack Ingress & Portfolio State Update (`e2e`, $\le 250\text{ ns}$ SLA).
+  2. **64-Byte Cacheline Structures:** `ExecutionReport64` (Fill confirmation) and `WireOrderFrame` strictly aligned to 64 bytes (`align(64)`).
+  3. **In-Memory Simulated Match Engine (`MockExchangeMatcher`):** Single-threaded lock-free matcher processing millions of orders with simulated exchange latency.
+- **Verified Benchmark Results:**
+  - Full-Loop Throughput: **`5.31–5.40 Million ops/sec`**
+  - Tick-to-Order (`t2o`): **`19.64 ns`** (Mean)
+  - Order-to-Wire (`o2w`): **`18.10 ns`** (Mean)
+  - Wire-to-Ack (`w2a`): **`109.17 ns`** (Mean)
+  - E2E Round-Trip (`e2e`): **`166.11 ns`** (Mean)
+- **Rust FFI Bindings:**
+  - `awp_zig_rs::MockExchangeMatcher`: In-memory match engine lifecycle and order matching.
+  - `awp_zig_rs::TradingReactor::on_execution`: Real-time fill processing and portfolio position tracking.
+  - `awp_zig_rs::ExecutionReport64`: 64-byte trade confirmation structure with typed `ExecStatus`.
+
+---
+
+### Phase 6: Kernel Bypass Ingress Integration & Hardware FPGA Offload (Future)
 
 - **Objective:** Direct NIC-to-Ring DMA with local socket memory.
 - **Protocols Supported:**
@@ -170,3 +195,4 @@ flowchart TD
   - macOS: Raw BSD socket polling and Apple Network.framework Zero-Copy slabs.
 - **NUMA Local Allocation:** Enforce ring allocation on the specific NUMA node matching the pinned CPU core (`mbind` / `numa_alloc_onnode`).
 - **Vectorized Parsing (AVX-512 / ARM Neon):** Single-instruction parsing of binary ITCH/FIX protocol feeds.
+

@@ -248,6 +248,66 @@ comptime {
     std.debug.assert(@offsetOf(OrderSignal64, "_reserved") == 56);
 }
 
+/// Execution Status Enum for Trade Reports and Order Lifecycle
+pub const ExecStatus = enum(u8) {
+    New = 0,
+    PartiallyFilled = 1,
+    Filled = 2,
+    Canceled = 3,
+    Rejected = 4,
+};
+
+/// 64-Byte Cache-Line Aligned Execution Report / Trade Confirmation (Zero-Copy POD)
+pub const ExecutionReport64 = extern struct {
+    timestamp_ns: u64 align(64) = 0, // 8B: Ingress Ack timestamp (forces 64B struct alignment)
+    order_id: u64 = 0, // 8B: Client Order ID
+    exec_id: u64 = 0, // 8B: Exchange Execution ID
+    fill_price: f64 = 0, // 8B: Fill execution price
+    fill_qty: f64 = 0, // 8B: Executed fill quantity
+    leaves_qty: f64 = 0, // 8B: Remaining open order quantity
+    match_ts_ns: u64 = 0, // 8B: Match Engine execution timestamp
+    symbol_id: u32 = 0, // 4B: Integer ticker identifier
+    status: ExecStatus = .New, // 1B: Execution Status
+    side: u8 = 0, // 1B: Side (0 = Buy, 1 = Sell)
+    _pad: u16 = 0, // 2B: Padding to exactly 64B
+};
+
+comptime {
+    std.debug.assert(@sizeOf(ExecutionReport64) == 64);
+    std.debug.assert(@alignOf(ExecutionReport64) == 64);
+    std.debug.assert(@offsetOf(ExecutionReport64, "timestamp_ns") == 0);
+    std.debug.assert(@offsetOf(ExecutionReport64, "order_id") == 8);
+    std.debug.assert(@offsetOf(ExecutionReport64, "exec_id") == 16);
+    std.debug.assert(@offsetOf(ExecutionReport64, "fill_price") == 24);
+    std.debug.assert(@offsetOf(ExecutionReport64, "fill_qty") == 32);
+    std.debug.assert(@offsetOf(ExecutionReport64, "leaves_qty") == 40);
+    std.debug.assert(@offsetOf(ExecutionReport64, "match_ts_ns") == 48);
+    std.debug.assert(@offsetOf(ExecutionReport64, "symbol_id") == 56);
+    std.debug.assert(@offsetOf(ExecutionReport64, "status") == 60);
+    std.debug.assert(@offsetOf(ExecutionReport64, "side") == 61);
+    std.debug.assert(@offsetOf(ExecutionReport64, "_pad") == 62);
+}
+
+/// 64-Byte Cache-Line Aligned Outbound Binary Wire Order Frame
+pub const WireOrderFrame = extern struct {
+    magic: u32 align(64) = 0x57495245, // 4B: 'WIRE' magic identifier
+    seq: u32 = 0, // 4B: Outbound sequence number
+    timestamp_ns: u64 = 0, // 8B: Wire encode timestamp
+    order_id: u64 = 0, // 8B: Client Order ID
+    price: f64 = 0, // 8B: Limit price
+    qty: f64 = 0, // 8B: Order quantity
+    symbol_id: u32 = 0, // 4B: Integer ticker identifier
+    side: u32 = 0, // 4B: Side (0 = Buy, 1 = Sell)
+    action: u32 = 0, // 4B: Action (1 = New, 2 = Cancel, 3 = Replace)
+    flags: u32 = 0, // 4B: Flags (0x01 = IOC, 0x02 = PostOnly)
+    _pad: [8]u8 = [_]u8{0} ** 8, // 8B: Padding to 64 bytes
+};
+
+comptime {
+    std.debug.assert(@sizeOf(WireOrderFrame) == 64);
+    std.debug.assert(@alignOf(WireOrderFrame) == 64);
+}
+
 /// Ultra-Fast Cache-Optimized Single-Producer Single-Consumer (SPSC) Ring Buffer
 /// Parameterized by Item Type `T` and Capacity `capacity` (must be power of two).
 /// Features:
@@ -1068,6 +1128,12 @@ pub fn TradingReactor(comptime capacity: usize) type {
         audit_ring: ?*SignalRing = null,
         telemetry_ring: ?*SignalRing = null,
 
+        // Execution & Portfolio tracking state
+        net_position: f64 = 0,
+        total_fill_qty: f64 = 0,
+        total_fill_notional: f64 = 0,
+        acked_orders: u64 = 0,
+
         pub fn init() Self {
             return Self{};
         }
@@ -1150,6 +1216,146 @@ pub fn TradingReactor(comptime capacity: usize) type {
 
         pub inline fn getOverrunCount(self: *const Self) u64 {
             return self.overrun_count.load(.acquire);
+        }
+
+        /// Process incoming ExecutionReport on Fast-Path Core (Zero Syscalls, Zero Locks)
+        pub inline fn onExecutionReport(self: *Self, report: ExecutionReport64) void {
+            self.acked_orders += 1;
+            if (report.status == .Filled or report.status == .PartiallyFilled) {
+                self.total_fill_qty += report.fill_qty;
+                self.total_fill_notional += report.fill_price * report.fill_qty;
+                if (report.fill_qty > 0 and report.symbol_id != 0) {
+                    if (report.side == 0) {
+                        self.net_position += report.fill_qty;
+                    } else {
+                        self.net_position -= report.fill_qty;
+                    }
+                }
+            }
+        }
+
+        pub inline fn getNetPosition(self: *const Self) f64 {
+            return self.net_position;
+        }
+
+        pub inline fn getAckedOrders(self: *const Self) u64 {
+            return self.acked_orders;
+        }
+    };
+}
+
+/// In-Memory Mock Exchange Matching Engine for Deterministic Loopback Testing & Benchmarks
+pub fn MockExchangeMatcher(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        pub const OrderQueue = SpscRing(OrderSignal64, capacity);
+        pub const ReportQueue = SpscRing(ExecutionReport64, capacity);
+
+        in_ring: OrderQueue,
+        out_ring: ReportQueue,
+        running: std.atomic.Value(bool) align(64),
+        matched_orders: std.atomic.Value(u64) align(64),
+        thread: ?std.Thread = null,
+        next_exec_id: u64 align(64) = 1,
+
+        pub fn init(allocator: std.mem.Allocator) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            var in_r = try OrderQueue.init(allocator);
+            errdefer in_r.deinit();
+
+            var out_r = try ReportQueue.init(allocator);
+            errdefer out_r.deinit();
+
+            self.* = .{
+                .in_ring = in_r,
+                .out_ring = out_r,
+                .running = std.atomic.Value(bool).init(false),
+                .matched_orders = std.atomic.Value(u64).init(0),
+                .thread = null,
+                .next_exec_id = 1,
+            };
+            return self;
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            self.stop();
+            self.out_ring.deinit();
+            self.in_ring.deinit();
+            allocator.destroy(self);
+        }
+
+        pub fn start(self: *Self) !void {
+            if (self.running.swap(true, .acq_rel)) return;
+            errdefer self.stop();
+            self.thread = try std.Thread.spawn(.{}, workerLoop, .{self});
+        }
+
+        pub fn stop(self: *Self) void {
+            if (!self.running.swap(false, .acq_rel)) return;
+            if (self.thread) |t| {
+                t.join();
+                self.thread = null;
+            }
+        }
+
+        fn workerLoop(self: *Self) void {
+            pinToPerformanceCores();
+            while (self.running.load(.acquire)) {
+                var processed = false;
+                while (self.in_ring.popValue()) |order| {
+                    processed = true;
+                    self.processOrderInPlace(order);
+                }
+                if (!processed) {
+                    std.atomic.spinLoopHint();
+                }
+            }
+            while (self.in_ring.popValue()) |order| {
+                self.processOrderInPlace(order);
+            }
+        }
+
+        pub inline fn processOrderInPlace(self: *Self, order: OrderSignal64) void {
+            const match_ts = nowNs();
+            const exec_id = self.next_exec_id;
+            self.next_exec_id +%= 1;
+
+            var status: ExecStatus = .Filled;
+            var fill_qty = order.qty;
+            var leaves_qty: f64 = 0;
+
+            if (order.action == 2 or ((order.flags & 0x01) != 0 and order.price <= 0)) {
+                status = .Canceled;
+                fill_qty = 0;
+                leaves_qty = 0;
+            }
+
+            const report = ExecutionReport64{
+                .timestamp_ns = nowNs(),
+                .order_id = order.order_id,
+                .exec_id = exec_id,
+                .fill_price = order.price,
+                .fill_qty = fill_qty,
+                .leaves_qty = leaves_qty,
+                .match_ts_ns = match_ts,
+                .symbol_id = order.symbol_id,
+                .status = status,
+                .side = @truncate(order.side),
+                ._pad = 0,
+            };
+
+            while (true) {
+                if (self.out_ring.claim()) |slot| {
+                    slot.* = report;
+                    self.out_ring.commit();
+                    _ = self.matched_orders.fetchAdd(1, .monotonic);
+                    break;
+                }
+                if (!self.running.load(.acquire)) break;
+                std.atomic.spinLoopHint();
+            }
         }
     };
 }
@@ -1630,4 +1836,75 @@ test "TradingReactor and OffPathPipeline integrated processing" {
     try std.testing.expectEqual(@as(u64, 100), pipeline.risk_processed.load(.acquire));
     try std.testing.expectEqual(@as(u64, 100), pipeline.audit_processed.load(.acquire));
     try std.testing.expectEqual(@as(u64, 100), pipeline.telemetry_processed.load(.acquire));
+}
+
+test "MockExchangeMatcher and End-to-End Execution Loopback" {
+    const Matcher = MockExchangeMatcher(256);
+    var matcher = try Matcher.init(std.testing.allocator);
+    defer matcher.deinit(std.testing.allocator);
+
+    try matcher.start();
+
+    var reactor = TradingReactor(256).init();
+
+    // 1. Submit 50 buy orders through the mock matcher
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        const order = OrderSignal64{
+            .timestamp_ns = nowNs(),
+            .ingress_ts_ns = nowNs(),
+            .order_id = i + 1,
+            .price = 50000.0 + @as(f64, @floatFromInt(i)),
+            .qty = 1.5,
+            .symbol_id = 1,
+            .side = 0,
+            .action = 1,
+            .flags = 0x02,
+        };
+
+        const slot = matcher.in_ring.claim();
+        try std.testing.expect(slot != null);
+        slot.?.* = order;
+        matcher.in_ring.commit();
+    }
+
+    // 2. Give matcher time to match
+    var attempts: usize = 0;
+    while (matcher.matched_orders.load(.acquire) < 50 and attempts < 1000) : (attempts += 1) {
+        sleepNs(100_000);
+    }
+
+    matcher.stop();
+
+    try std.testing.expectEqual(@as(u64, 50), matcher.matched_orders.load(.acquire));
+
+    // 3. Drain execution reports into the reactor
+    var ack_count: usize = 0;
+    while (matcher.out_ring.popValue()) |report| {
+        ack_count += 1;
+        try std.testing.expectEqual(ExecStatus.Filled, report.status);
+        try std.testing.expectEqual(@as(f64, 1.5), report.fill_qty);
+        reactor.onExecutionReport(report);
+    }
+
+    try std.testing.expectEqual(@as(usize, 50), ack_count);
+    try std.testing.expectEqual(@as(u64, 50), reactor.getAckedOrders());
+    try std.testing.expectEqual(@as(f64, 75.0), reactor.getNetPosition());
+
+    // 4. Test a Sell fill to verify directional position updates
+    const sell_report = ExecutionReport64{
+        .timestamp_ns = nowNs(),
+        .order_id = 999,
+        .exec_id = 888,
+        .fill_price = 51000.0,
+        .fill_qty = 25.0,
+        .leaves_qty = 0,
+        .match_ts_ns = nowNs(),
+        .symbol_id = 1,
+        .status = .Filled,
+        .side = 1, // Sell
+    };
+    reactor.onExecutionReport(sell_report);
+    try std.testing.expectEqual(@as(u64, 51), reactor.getAckedOrders());
+    try std.testing.expectEqual(@as(f64, 50.0), reactor.getNetPosition()); // 75.0 - 25.0 = 50.0
 }
