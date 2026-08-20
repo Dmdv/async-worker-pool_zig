@@ -621,6 +621,358 @@ pub fn AwpPool(comptime num_workers: usize, comptime queue_capacity: usize) type
     };
 }
 
+/// Variable-Length Zero-Copy Bipartite Ring Buffer (BipBuffer)
+/// Guarantees 100% contiguous memory slices for arbitrary payload sizes (64B to MTU 64KB).
+/// Strictly Lock-Free Single-Producer Single-Consumer (SPSC) state machine with 0 concurrent write conflicts.
+pub fn BipBuffer(comptime capacity: usize) type {
+    comptime {
+        std.debug.assert(std.math.isPowerOfTwo(capacity) and capacity >= 64);
+    }
+    return struct {
+        const Self = @This();
+
+        buffer: []align(64) u8,
+
+        // Producer State (Exclusively written by Producer - Cacheline 0)
+        write_a: std.atomic.Value(usize) align(64),
+        write_b: std.atomic.Value(usize),
+        is_b_active: std.atomic.Value(bool),
+        cached_read_a: usize,
+
+        // Consumer State (Exclusively written by Consumer - Cacheline 1)
+        read_a: std.atomic.Value(usize) align(64),
+        is_reading_b: std.atomic.Value(bool),
+        cached_write_a: usize,
+        cached_write_b: usize,
+
+        allocator: ?std.mem.Allocator,
+        slab: ?*HftMemorySlab,
+
+        pub fn init(allocator: std.mem.Allocator) !Self {
+            const buf = try allocator.allocWithOptions(u8, capacity, std.mem.Alignment.@"64", null);
+            return Self{
+                .buffer = buf,
+                .write_a = std.atomic.Value(usize).init(0),
+                .write_b = std.atomic.Value(usize).init(0),
+                .is_b_active = std.atomic.Value(bool).init(false),
+                .cached_read_a = 0,
+                .read_a = std.atomic.Value(usize).init(0),
+                .is_reading_b = std.atomic.Value(bool).init(false),
+                .cached_write_a = 0,
+                .cached_write_b = 0,
+                .allocator = allocator,
+                .slab = null,
+            };
+        }
+
+        pub fn initSlab(slab: *HftMemorySlab) !Self {
+            if (slab.len < capacity) return error.SlabTooSmall;
+            if ((@intFromPtr(slab.ptr) & 63) != 0) return error.SlabUnaligned;
+            const ptr: [*]align(64) u8 = @ptrCast(@alignCast(slab.ptr));
+            return Self{
+                .buffer = ptr[0..capacity],
+                .write_a = std.atomic.Value(usize).init(0),
+                .write_b = std.atomic.Value(usize).init(0),
+                .is_b_active = std.atomic.Value(bool).init(false),
+                .cached_read_a = 0,
+                .read_a = std.atomic.Value(usize).init(0),
+                .is_reading_b = std.atomic.Value(bool).init(false),
+                .cached_write_a = 0,
+                .cached_write_b = 0,
+                .allocator = null,
+                .slab = slab,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.allocator) |alloc| {
+                alloc.free(self.buffer);
+            }
+        }
+
+        /// Zero-Copy Reserve: Request a contiguous mutable slice of exactly `size` bytes.
+        pub inline fn reserve(self: *Self, size: usize) ?[]u8 {
+            if (size == 0 or size > capacity) return null;
+
+            if (!self.is_b_active.load(.monotonic)) {
+                const wa = self.write_a.load(.monotonic);
+                // Fast Path: Fits at the tail of Region A
+                if (capacity - wa >= size) {
+                    return self.buffer[wa .. wa + size];
+                }
+
+                // Check if we can wrap to Region B (start of buffer)
+                const ra = self.read_a.load(.acquire);
+                self.cached_read_a = ra;
+                if (ra > size) {
+                    self.write_b.store(0, .monotonic);
+                    self.is_b_active.store(true, .release);
+                    return self.buffer[0..size];
+                }
+
+                return null; // Buffer full
+            } else {
+                // Region B is active
+                if (self.is_reading_b.load(.acquire)) {
+                    // Consumer has switched to reading Region B!
+                    // Region A is completely freed, so promote Region B to Region A
+                    const wb = self.write_b.load(.monotonic);
+                    self.write_a.store(wb, .release);
+                    self.write_b.store(0, .monotonic);
+                    self.is_b_active.store(false, .release);
+
+                    // Retry in Region A
+                    if (capacity - wb >= size) {
+                        return self.buffer[wb .. wb + size];
+                    }
+                    return null;
+                }
+
+                const wb = self.write_b.load(.monotonic);
+                const ra = self.read_a.load(.acquire);
+                self.cached_read_a = ra;
+
+                if (ra > wb and ra - wb > size) {
+                    return self.buffer[wb .. wb + size];
+                }
+
+                return null; // Region B full
+            }
+        }
+
+        /// Commit the previously reserved bytes, publishing them to consumer.
+        pub inline fn commit(self: *Self, size: usize) void {
+            if (!self.is_b_active.load(.monotonic)) {
+                const wa = self.write_a.load(.monotonic);
+                self.write_a.store(wa + size, .release);
+            } else {
+                const wb = self.write_b.load(.monotonic);
+                self.write_b.store(wb + size, .release);
+            }
+        }
+
+        /// Push contiguous data into BipBuffer (convenience copy wrapper)
+        pub inline fn push(self: *Self, data: []const u8) bool {
+            const slice = self.reserve(data.len) orelse return false;
+            @memcpy(slice, data);
+            self.commit(data.len);
+            return true;
+        }
+
+        /// Zero-Copy Peek: Returns current contiguous readable slice, or null if empty.
+        pub inline fn peek(self: *Self) ?[]const u8 {
+            if (!self.is_reading_b.load(.monotonic)) {
+                const ra = self.read_a.load(.monotonic);
+                const wa = self.write_a.load(.acquire);
+
+                if (ra < wa) {
+                    return self.buffer[ra..wa];
+                }
+
+                // Region A is drained. Check if Region B is ready
+                if (self.is_b_active.load(.acquire)) {
+                    const wb = self.write_b.load(.acquire);
+                    if (wb > 0) {
+                        self.read_a.store(0, .release);
+                        self.is_reading_b.store(true, .release);
+                        return self.buffer[0..wb];
+                    }
+                }
+
+                return null;
+            } else {
+                // Currently reading Region B
+                const ra = self.read_a.load(.monotonic);
+                if (self.is_b_active.load(.acquire)) {
+                    const wb = self.write_b.load(.acquire);
+                    if (ra < wb) return self.buffer[ra..wb];
+                } else {
+                    // Region B was promoted to Region A by Producer
+                    self.is_reading_b.store(false, .release);
+                    const wa = self.write_a.load(.acquire);
+                    if (ra < wa) return self.buffer[ra..wa];
+                }
+                return null;
+            }
+        }
+
+        /// Mark `size` bytes as consumed by the reader.
+        pub inline fn consume(self: *Self, size: usize) void {
+            const ra = self.read_a.load(.monotonic);
+            const new_ra = ra + size;
+
+            if (!self.is_reading_b.load(.monotonic)) {
+                const wa = self.write_a.load(.monotonic);
+                if (new_ra >= wa) {
+                    if (self.is_b_active.load(.acquire)) {
+                        self.read_a.store(0, .release);
+                        self.is_reading_b.store(true, .release);
+                        return;
+                    }
+                    self.read_a.store(wa, .release);
+                } else {
+                    self.read_a.store(new_ra, .release);
+                }
+            } else {
+                if (self.is_b_active.load(.acquire)) {
+                    const wb = self.write_b.load(.monotonic);
+                    if (new_ra >= wb) {
+                        self.read_a.store(wb, .release);
+                    } else {
+                        self.read_a.store(new_ra, .release);
+                    }
+                } else {
+                    // Promoted
+                    self.is_reading_b.store(false, .release);
+                    self.read_a.store(new_ra, .release);
+                }
+            }
+        }
+    };
+}
+
+/// Variable-Length Packet Descriptor (16 Bytes, Zero-Copy Metadata)
+pub const PacketDescriptor = extern struct {
+    timestamp_ns: u64, // 8B: Ingress monotonic hardware timestamp
+    offset: u32, // 4B: Offset in BipBuffer
+    len: u32, // 4B: Packet payload byte length (e.g. 64B to 9000B Jumbo Frame)
+};
+
+comptime {
+    std.debug.assert(@sizeOf(PacketDescriptor) == 16);
+    std.debug.assert(@alignOf(PacketDescriptor) == 8);
+}
+
+/// High-Throughput Packet Ring coupling Variable-Length BipBuffer with a Lock-Free Descriptor SPSC Ring
+pub fn BipRing(comptime buffer_capacity: usize, comptime descriptor_capacity: usize) type {
+    comptime {
+        std.debug.assert(std.math.isPowerOfTwo(buffer_capacity) and buffer_capacity >= 64);
+    }
+    return struct {
+        const Self = @This();
+        pub const DescRing = SpscRing(PacketDescriptor, descriptor_capacity);
+
+        buffer: []align(64) u8,
+        desc_ring: DescRing,
+
+        // Producer State (Cacheline 0 - align(64))
+        write_offset: std.atomic.Value(usize) align(64),
+        cached_read_offset: usize,
+
+        // Consumer State (Cacheline 1 - align(64))
+        read_offset: std.atomic.Value(usize) align(64),
+        cached_write_offset: usize,
+
+        allocator: ?std.mem.Allocator,
+        slab: ?*HftMemorySlab,
+        desc_slab: ?*HftMemorySlab,
+
+        pub fn init(allocator: std.mem.Allocator) !Self {
+            const buf = try allocator.allocWithOptions(u8, buffer_capacity, std.mem.Alignment.@"64", null);
+            return Self{
+                .buffer = buf,
+                .desc_ring = try DescRing.init(allocator),
+                .write_offset = std.atomic.Value(usize).init(0),
+                .cached_read_offset = 0,
+                .read_offset = std.atomic.Value(usize).init(0),
+                .cached_write_offset = 0,
+                .allocator = allocator,
+                .slab = null,
+                .desc_slab = null,
+            };
+        }
+
+        pub fn initSlab(bip_slab: *HftMemorySlab, desc_slab: *HftMemorySlab) !Self {
+            if (bip_slab.len < buffer_capacity) return error.SlabTooSmall;
+            if ((@intFromPtr(bip_slab.ptr) & 63) != 0) return error.SlabUnaligned;
+            const ptr: [*]align(64) u8 = @ptrCast(@alignCast(bip_slab.ptr));
+            return Self{
+                .buffer = ptr[0..buffer_capacity],
+                .desc_ring = try DescRing.initSlab(desc_slab),
+                .write_offset = std.atomic.Value(usize).init(0),
+                .cached_read_offset = 0,
+                .read_offset = std.atomic.Value(usize).init(0),
+                .cached_write_offset = 0,
+                .allocator = null,
+                .slab = bip_slab,
+                .desc_slab = desc_slab,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.allocator) |alloc| {
+                alloc.free(self.buffer);
+            }
+            self.desc_ring.deinit();
+        }
+
+        pub inline fn pushPacket(self: *Self, payload: []const u8, timestamp: u64) bool {
+            if (payload.len == 0 or payload.len > buffer_capacity) return false;
+
+            const desc_slot = self.desc_ring.claim() orelse return false;
+
+            var wo = self.write_offset.load(.monotonic);
+            var ro = self.cached_read_offset;
+
+            var target_offset: usize = 0;
+
+            if (wo >= ro) {
+                // Free space at tail
+                if (buffer_capacity - wo >= payload.len) {
+                    target_offset = wo;
+                    wo += payload.len;
+                } else {
+                    // Try wrap to 0
+                    ro = self.read_offset.load(.acquire);
+                    self.cached_read_offset = ro;
+                    if (ro > payload.len) {
+                        target_offset = 0;
+                        wo = payload.len;
+                    } else {
+                        return false; // Buffer full
+                    }
+                }
+            } else {
+                // Wrapped state: wo < ro
+                if (ro - wo > payload.len) {
+                    target_offset = wo;
+                    wo += payload.len;
+                } else {
+                    ro = self.read_offset.load(.acquire);
+                    self.cached_read_offset = ro;
+                    if (ro > wo and ro - wo > payload.len) {
+                        target_offset = wo;
+                        wo += payload.len;
+                    } else {
+                        return false; // Buffer full
+                    }
+                }
+            }
+
+            @memcpy(self.buffer[target_offset .. target_offset + payload.len], payload);
+            self.write_offset.store(wo, .release);
+
+            desc_slot.* = PacketDescriptor{
+                .timestamp_ns = timestamp,
+                .offset = @intCast(target_offset),
+                .len = @intCast(payload.len),
+            };
+            self.desc_ring.commit();
+            return true;
+        }
+
+        pub inline fn popPacket(self: *Self) ?struct { desc: PacketDescriptor, payload: []const u8 } {
+            const desc = self.desc_ring.popValue() orelse return null;
+            const end_offset = desc.offset + desc.len;
+            self.read_offset.store(end_offset, .release);
+            return .{
+                .desc = desc,
+                .payload = self.buffer[desc.offset..end_offset],
+            };
+        }
+    };
+}
+
 test "SpscRing Frame push pop" {
     var ring = try FrameSpscRing(64).init(std.testing.allocator);
     defer ring.deinit();
@@ -739,4 +1091,118 @@ test "HftMemorySlab allocation prefaulting and deallocation" {
     var slab_perm = try HftMemorySlab.allocatePermissive(32 * 1024);
     defer slab_perm.deallocate();
     try std.testing.expect(slab_perm.len >= 32 * 1024);
+}
+
+test "BipBuffer sequential reserve commit and peek consume" {
+    var bip = try BipBuffer(1024).init(std.testing.allocator);
+    defer bip.deinit();
+
+    // 1. Reserve & Commit
+    const res = bip.reserve(100);
+    try std.testing.expect(res != null);
+    @memset(res.?, 0x42);
+    bip.commit(100);
+
+    // 2. Peek & Consume
+    const peeked = bip.peek();
+    try std.testing.expect(peeked != null);
+    try std.testing.expectEqual(@as(usize, 100), peeked.?.len);
+    try std.testing.expectEqual(@as(u8, 0x42), peeked.?[0]);
+    bip.consume(100);
+
+    try std.testing.expect(bip.peek() == null);
+}
+
+test "BipBuffer bipartite wrapping Region A to Region B" {
+    var bip = try BipBuffer(256).init(std.testing.allocator);
+    defer bip.deinit();
+
+    // Fill 200 bytes in Region A
+    try std.testing.expect(bip.push("A" ** 200));
+
+    // Consume 150 bytes (read_a moves to 150, 50 bytes left in A)
+    const p1 = bip.peek();
+    try std.testing.expect(p1 != null and p1.?.len == 200);
+    bip.consume(150);
+
+    // Now capacity - write_a = 256 - 200 = 56 bytes.
+    // Try to reserve 100 bytes (cannot fit in remaining 56B of A, wraps to B because read_a=150 > 100)
+    const res_b = bip.reserve(100);
+    try std.testing.expect(res_b != null);
+    @memset(res_b.?, 'B');
+    bip.commit(100);
+
+    // Reader finishes remaining 50 bytes of A
+    const p_rem_a = bip.peek();
+    try std.testing.expect(p_rem_a != null and p_rem_a.?.len == 50);
+    try std.testing.expectEqual(@as(u8, 'A'), p_rem_a.?[0]);
+    bip.consume(50);
+
+    // Reader now sees Region B (100 bytes of 'B')
+    const p_b = bip.peek();
+    try std.testing.expect(p_b != null and p_b.?.len == 100);
+    try std.testing.expectEqual(@as(u8, 'B'), p_b.?[0]);
+    bip.consume(100);
+
+    try std.testing.expect(bip.peek() == null);
+}
+
+test "BipBuffer HugePage Slab backing" {
+    var slab = try HftMemorySlab.allocate(64 * 1024);
+    defer slab.deallocate();
+
+    var bip = try BipBuffer(64 * 1024).initSlab(&slab);
+    defer bip.deinit();
+
+    const desc = PacketDescriptor{
+        .timestamp_ns = nowNs(),
+        .offset = 0,
+        .len = 1500, // MTU size
+    };
+
+    const res = bip.reserve(desc.len);
+    try std.testing.expect(res != null);
+    @memset(res.?, 0xEE);
+    bip.commit(desc.len);
+
+    const peeked = bip.peek();
+    try std.testing.expect(peeked != null);
+    try std.testing.expectEqual(@as(usize, 1500), peeked.?.len);
+    try std.testing.expectEqual(@as(u8, 0xEE), peeked.?[0]);
+    bip.consume(desc.len);
+}
+
+test "BipRing variable-length packet streaming" {
+    var ring = try BipRing(4096, 64).init(std.testing.allocator);
+    defer ring.deinit();
+
+    // Stream 3 packets of varying sizes (64B, 256B, 1500B MTU)
+    const p1 = [_]u8{0x11} ** 64;
+    const p2 = [_]u8{0x22} ** 256;
+    const p3 = [_]u8{0x33} ** 1500;
+
+    try std.testing.expect(ring.pushPacket(&p1, 1001));
+    try std.testing.expect(ring.pushPacket(&p2, 1002));
+    try std.testing.expect(ring.pushPacket(&p3, 1003));
+
+    // Pop & verify
+    const rec1 = ring.popPacket();
+    try std.testing.expect(rec1 != null);
+    try std.testing.expectEqual(@as(u64, 1001), rec1.?.desc.timestamp_ns);
+    try std.testing.expectEqual(@as(usize, 64), rec1.?.payload.len);
+    try std.testing.expectEqual(@as(u8, 0x11), rec1.?.payload[0]);
+
+    const rec2 = ring.popPacket();
+    try std.testing.expect(rec2 != null);
+    try std.testing.expectEqual(@as(u64, 1002), rec2.?.desc.timestamp_ns);
+    try std.testing.expectEqual(@as(usize, 256), rec2.?.payload.len);
+    try std.testing.expectEqual(@as(u8, 0x22), rec2.?.payload[0]);
+
+    const rec3 = ring.popPacket();
+    try std.testing.expect(rec3 != null);
+    try std.testing.expectEqual(@as(u64, 1003), rec3.?.desc.timestamp_ns);
+    try std.testing.expectEqual(@as(usize, 1500), rec3.?.payload.len);
+    try std.testing.expectEqual(@as(u8, 0x33), rec3.?.payload[0]);
+
+    try std.testing.expect(ring.popPacket() == null);
 }

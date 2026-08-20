@@ -23,7 +23,9 @@ impl fmt::Display for AwpError {
             AwpError::TooBig => write!(f, "Payload or identifier exceeds buffer limit (E2BIG)"),
             AwpError::QueueFull => write!(f, "Queue is full (EAGAIN)"),
             AwpError::OutOfMemory => write!(f, "Out of memory during allocation (ENOMEM)"),
-            AwpError::Failed(rc) => write!(f, "libawp_zig operation failed with error code: {}", rc),
+            AwpError::Failed(rc) => {
+                write!(f, "libawp_zig operation failed with error code: {}", rc)
+            }
         }
     }
 }

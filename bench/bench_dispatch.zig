@@ -351,6 +351,78 @@ pub fn main() !void {
     std.debug.print("64-Byte POD SPSC Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ pod_throughput / 1e6, pod_duration_ns / 1e6 });
     std.debug.print("64-Byte POD SPSC Mean Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ pod_avg_lat, pod_avg_lat / 1000.0, pod_ctx.csum.load(.monotonic) });
 
+    // 6. Variable-Length Zero-Copy BipBuffer Streaming Benchmark
+    std.debug.print("=== Zig 0.16 Variable-Length Zero-Copy BipBuffer (Bipartite Ring) ===\n", .{});
+    const BIP_CAP = 256 * 1024; // 256KB BipBuffer
+    const DESC_CAP = 8192;
+    const BIP_MSGS = 2_000_000;
+    const RingType = awp.BipRing(BIP_CAP, DESC_CAP);
+    var bip_ring = try RingType.init(backing_allocator);
+    defer bip_ring.deinit();
+
+    const BipCtx = struct {
+        ring: *RingType,
+        n: usize,
+        ready: std.atomic.Value(bool),
+        done: std.atomic.Value(bool),
+        csum: std.atomic.Value(u64),
+
+        fn runConsumer(ctx: *@This()) void {
+            awp.pinToPerformanceCores();
+            ctx.ready.store(true, .release);
+            var got: usize = 0;
+            var sum: u64 = 0;
+            while (got < ctx.n) {
+                if (ctx.ring.popPacket()) |pkt| {
+                    sum +%= pkt.payload[0] +% pkt.payload[pkt.payload.len - 1] +% pkt.desc.timestamp_ns;
+                    got += 1;
+                } else {
+                    std.atomic.spinLoopHint();
+                }
+            }
+            ctx.csum.store(sum, .release);
+            ctx.done.store(true, .release);
+        }
+    };
+
+    var bip_ctx = BipCtx{
+        .ring = &bip_ring,
+        .n = BIP_MSGS,
+        .ready = std.atomic.Value(bool).init(false),
+        .done = std.atomic.Value(bool).init(false),
+        .csum = std.atomic.Value(u64).init(0),
+    };
+
+    const bip_cons_thread = try std.Thread.spawn(.{}, BipCtx.runConsumer, .{&bip_ctx});
+    while (!bip_ctx.ready.load(.acquire)) {
+        std.atomic.spinLoopHint();
+    }
+    const bip_t0 = awp.nowNs();
+
+    var payload_buf: [1500]u8 = undefined;
+    @memset(&payload_buf, 0x55);
+    const msg_sizes = [_]usize{ 64, 128, 256, 512, 1024, 1400 };
+
+    for (0..BIP_MSGS) |i| {
+        const sz = msg_sizes[i % msg_sizes.len];
+        payload_buf[0] = @truncate(i);
+        payload_buf[sz - 1] = @truncate(i >> 8);
+
+        while (!bip_ring.pushPacket(payload_buf[0..sz], @intCast(i))) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    bip_cons_thread.join();
+    const bip_t1 = awp.nowNs();
+    const bip_duration_ns = @as(f64, @floatFromInt(bip_t1 - bip_t0));
+    const bip_duration_sec = bip_duration_ns / 1_000_000_000.0;
+    const bip_throughput = @as(f64, @floatFromInt(BIP_MSGS)) / bip_duration_sec;
+    const bip_avg_lat = bip_duration_ns / @as(f64, @floatFromInt(BIP_MSGS));
+
+    std.debug.print("Variable-Length BipBuffer Throughput: {d:.2} M pkts/sec (Wall: {d:.2} ms)\n", .{ bip_throughput / 1e6, bip_duration_ns / 1e6 });
+    std.debug.print("Variable-Length BipBuffer Mean Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ bip_avg_lat, bip_avg_lat / 1000.0, bip_ctx.csum.load(.monotonic) });
+
     var json_path: ?[]const u8 = null;
     const env_val = c_stdio.getenv("BENCH_JSON_OUT");
     if (env_val != null) {
@@ -377,7 +449,9 @@ pub fn main() !void {
             \\  "spsc_throughput_mops": {d:.2},
             \\  "spsc_mean_ns": {d:.2},
             \\  "spsc64_throughput_mops": {d:.2},
-            \\  "spsc64_mean_ns": {d:.2}
+            \\  "spsc64_mean_ns": {d:.2},
+            \\  "bip_throughput_mops": {d:.2},
+            \\  "bip_mean_ns": {d:.2}
             \\}}
             \\
         , .{
@@ -397,6 +471,8 @@ pub fn main() !void {
             p_avg_lat,
             pod_throughput / 1e6,
             pod_avg_lat,
+            bip_throughput / 1e6,
+            bip_avg_lat,
         });
         var path_z: [1024:0]u8 = undefined;
         @memcpy(path_z[0..path.len], path);

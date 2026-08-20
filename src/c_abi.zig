@@ -316,3 +316,408 @@ export fn awp_zig_submit(
         return -11; // EAGAIN / Queue Full (Non-blocking HFT semantics)
     }
 }
+
+pub const DynamicBip = struct {
+    allocator: std.mem.Allocator,
+    buffer: []align(64) u8,
+    write_a: std.atomic.Value(usize) align(64),
+    write_b: std.atomic.Value(usize),
+    is_b_active: std.atomic.Value(bool),
+    cached_read_a: usize,
+
+    read_a: std.atomic.Value(usize) align(64),
+    is_reading_b: std.atomic.Value(bool),
+    cached_write_a: usize,
+    cached_write_b: usize,
+    capacity: usize,
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !*DynamicBip {
+        if (!std.math.isPowerOfTwo(capacity) or capacity < 64) return error.InvalidCapacity;
+        const self = try allocator.create(DynamicBip);
+        errdefer allocator.destroy(self);
+
+        const buf = try allocator.allocWithOptions(u8, capacity, std.mem.Alignment.@"64", null);
+        errdefer allocator.free(buf);
+
+        self.* = .{
+            .allocator = allocator,
+            .buffer = buf,
+            .write_a = std.atomic.Value(usize).init(0),
+            .write_b = std.atomic.Value(usize).init(0),
+            .is_b_active = std.atomic.Value(bool).init(false),
+            .cached_read_a = 0,
+            .read_a = std.atomic.Value(usize).init(0),
+            .is_reading_b = std.atomic.Value(bool).init(false),
+            .cached_write_a = 0,
+            .cached_write_b = 0,
+            .capacity = capacity,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *DynamicBip) void {
+        self.allocator.free(self.buffer);
+        self.allocator.destroy(self);
+    }
+
+    pub inline fn reserve(self: *DynamicBip, size: usize) ?[]u8 {
+        if (size == 0 or size > self.capacity) return null;
+
+        if (!self.is_b_active.load(.monotonic)) {
+            const wa = self.write_a.load(.monotonic);
+            if (self.capacity - wa >= size) {
+                return self.buffer[wa .. wa + size];
+            }
+
+            const ra = self.read_a.load(.acquire);
+            self.cached_read_a = ra;
+            if (ra > size) {
+                self.write_b.store(0, .monotonic);
+                self.is_b_active.store(true, .release);
+                return self.buffer[0..size];
+            }
+            return null;
+        } else {
+            if (self.is_reading_b.load(.acquire)) {
+                const wb = self.write_b.load(.monotonic);
+                self.write_a.store(wb, .release);
+                self.write_b.store(0, .monotonic);
+                self.is_b_active.store(false, .release);
+
+                if (self.capacity - wb >= size) {
+                    return self.buffer[wb .. wb + size];
+                }
+                return null;
+            }
+
+            const wb = self.write_b.load(.monotonic);
+            const ra = self.read_a.load(.acquire);
+            self.cached_read_a = ra;
+            if (ra > wb and ra - wb > size) {
+                return self.buffer[wb .. wb + size];
+            }
+            return null;
+        }
+    }
+
+    pub inline fn commit(self: *DynamicBip, size: usize) void {
+        if (!self.is_b_active.load(.monotonic)) {
+            const wa = self.write_a.load(.monotonic);
+            self.write_a.store(wa + size, .release);
+        } else {
+            const wb = self.write_b.load(.monotonic);
+            self.write_b.store(wb + size, .release);
+        }
+    }
+
+    pub inline fn peek(self: *DynamicBip) ?[]const u8 {
+        if (!self.is_reading_b.load(.monotonic)) {
+            const ra = self.read_a.load(.monotonic);
+            const wa = self.write_a.load(.acquire);
+
+            if (ra < wa) {
+                return self.buffer[ra..wa];
+            }
+
+            if (self.is_b_active.load(.acquire)) {
+                const wb = self.write_b.load(.acquire);
+                if (wb > 0) {
+                    self.read_a.store(0, .release);
+                    self.is_reading_b.store(true, .release);
+                    return self.buffer[0..wb];
+                }
+            }
+
+            return null;
+        } else {
+            const ra = self.read_a.load(.monotonic);
+            if (self.is_b_active.load(.acquire)) {
+                const wb = self.write_b.load(.acquire);
+                if (ra < wb) return self.buffer[ra..wb];
+            } else {
+                self.is_reading_b.store(false, .release);
+                const wa = self.write_a.load(.acquire);
+                if (ra < wa) return self.buffer[ra..wa];
+            }
+            return null;
+        }
+    }
+
+    pub inline fn consume(self: *DynamicBip, size: usize) void {
+        const ra = self.read_a.load(.monotonic);
+        const new_ra = ra + size;
+
+        if (!self.is_reading_b.load(.monotonic)) {
+            const wa = self.write_a.load(.monotonic);
+            if (new_ra >= wa) {
+                if (self.is_b_active.load(.acquire)) {
+                    self.read_a.store(0, .release);
+                    self.is_reading_b.store(true, .release);
+                    return;
+                }
+                self.read_a.store(wa, .release);
+            } else {
+                self.read_a.store(new_ra, .release);
+            }
+        } else {
+            if (self.is_b_active.load(.acquire)) {
+                const wb = self.write_b.load(.monotonic);
+                if (new_ra >= wb) {
+                    self.read_a.store(wb, .release);
+                } else {
+                    self.read_a.store(new_ra, .release);
+                }
+            } else {
+                self.is_reading_b.store(false, .release);
+                self.read_a.store(new_ra, .release);
+            }
+        }
+    }
+};
+
+pub export fn awp_zig_bip_create(capacity: usize, out_bip: *?*anyopaque) callconv(.c) c_int {
+    if (!std.math.isPowerOfTwo(capacity) or capacity < 64) return -22;
+    const bip = DynamicBip.init(std.heap.c_allocator, capacity) catch return -12;
+    out_bip.* = @ptrCast(bip);
+    return 0;
+}
+
+pub export fn awp_zig_bip_destroy(bip_ptr: ?*anyopaque) callconv(.c) void {
+    if (bip_ptr) |ptr| {
+        const bip: *DynamicBip = @ptrCast(@alignCast(ptr));
+        bip.deinit();
+    }
+}
+
+pub export fn awp_zig_bip_reserve(bip_ptr: ?*anyopaque, size: usize, out_ptr: *[*]u8) callconv(.c) c_int {
+    if (bip_ptr == null or size == 0) return -22;
+    const bip: *DynamicBip = @ptrCast(@alignCast(bip_ptr.?));
+    if (bip.reserve(size)) |slice| {
+        out_ptr.* = slice.ptr;
+        return 0;
+    }
+    return -11; // EAGAIN / Full
+}
+
+pub export fn awp_zig_bip_commit(bip_ptr: ?*anyopaque, size: usize) callconv(.c) void {
+    if (bip_ptr) |ptr| {
+        const bip: *DynamicBip = @ptrCast(@alignCast(ptr));
+        bip.commit(size);
+    }
+}
+
+pub export fn awp_zig_bip_peek(bip_ptr: ?*anyopaque, out_ptr: *[*]const u8, out_len: *usize) callconv(.c) c_int {
+    if (bip_ptr == null) return -22;
+    const bip: *DynamicBip = @ptrCast(@alignCast(bip_ptr.?));
+    if (bip.peek()) |slice| {
+        out_ptr.* = slice.ptr;
+        out_len.* = slice.len;
+        return 0;
+    }
+    return -11; // EAGAIN / Empty
+}
+
+pub export fn awp_zig_bip_consume(bip_ptr: ?*anyopaque, size: usize) callconv(.c) void {
+    if (bip_ptr) |ptr| {
+        const bip: *DynamicBip = @ptrCast(@alignCast(ptr));
+        bip.consume(size);
+    }
+}
+
+pub fn DynamicSpscRing(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        items: []align(64) T,
+        head: std.atomic.Value(usize) align(64),
+        tail: std.atomic.Value(usize) align(64),
+        cached_head: usize,
+        cached_tail: usize,
+        capacity: usize,
+        mask: usize,
+        allocator: std.mem.Allocator,
+
+        pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+            if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return error.InvalidCapacity;
+            const items = try allocator.allocWithOptions(T, capacity, std.mem.Alignment.@"64", null);
+            return Self{
+                .items = items,
+                .head = std.atomic.Value(usize).init(0),
+                .tail = std.atomic.Value(usize).init(0),
+                .cached_head = 0,
+                .cached_tail = 0,
+                .capacity = capacity,
+                .mask = capacity - 1,
+                .allocator = allocator,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.items);
+        }
+
+        pub inline fn claim(self: *Self) ?*T {
+            const head = self.head.load(.monotonic);
+            var tail = self.cached_tail;
+            if (head -% tail >= self.capacity) {
+                tail = self.tail.load(.acquire);
+                self.cached_tail = tail;
+                if (head -% tail >= self.capacity) return null;
+            }
+            return &self.items[head & self.mask];
+        }
+
+        pub inline fn commit(self: *Self) void {
+            const head = self.head.load(.monotonic);
+            self.head.store(head +% 1, .release);
+        }
+
+        pub inline fn popValue(self: *Self) ?T {
+            const tail = self.tail.load(.monotonic);
+            var head = self.cached_head;
+            if (tail == head) {
+                head = self.head.load(.acquire);
+                self.cached_head = head;
+                if (tail == head) return null;
+            }
+            const val = self.items[tail & self.mask];
+            self.tail.store(tail +% 1, .release);
+            return val;
+        }
+    };
+}
+
+pub const DynamicBipRing = struct {
+    allocator: std.mem.Allocator,
+    buffer: []align(64) u8,
+    desc_ring: DynamicSpscRing(root.PacketDescriptor),
+    write_offset: std.atomic.Value(usize) align(64),
+    cached_read_offset: usize,
+    read_offset: std.atomic.Value(usize) align(64),
+    cached_write_offset: usize,
+    buffer_capacity: usize,
+
+    pub fn init(allocator: std.mem.Allocator, buffer_capacity: usize, desc_capacity: usize) !*DynamicBipRing {
+        if (!std.math.isPowerOfTwo(buffer_capacity) or buffer_capacity < 64) return error.InvalidCapacity;
+        if (!std.math.isPowerOfTwo(desc_capacity) or desc_capacity < 2) return error.InvalidCapacity;
+
+        const self = try allocator.create(DynamicBipRing);
+        errdefer allocator.destroy(self);
+
+        const buf = try allocator.allocWithOptions(u8, buffer_capacity, std.mem.Alignment.@"64", null);
+        errdefer allocator.free(buf);
+
+        const desc_ring = try DynamicSpscRing(root.PacketDescriptor).init(allocator, desc_capacity);
+
+        self.* = .{
+            .allocator = allocator,
+            .buffer = buf,
+            .desc_ring = desc_ring,
+            .write_offset = std.atomic.Value(usize).init(0),
+            .cached_read_offset = 0,
+            .read_offset = std.atomic.Value(usize).init(0),
+            .cached_write_offset = 0,
+            .buffer_capacity = buffer_capacity,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *DynamicBipRing) void {
+        self.desc_ring.deinit();
+        self.allocator.free(self.buffer);
+        self.allocator.destroy(self);
+    }
+
+    pub inline fn pushPacket(self: *DynamicBipRing, payload: []const u8, timestamp: u64) bool {
+        if (payload.len == 0 or payload.len > self.buffer_capacity) return false;
+        const desc_slot = self.desc_ring.claim() orelse return false;
+
+        var wo = self.write_offset.load(.monotonic);
+        var ro = self.cached_read_offset;
+        var target_offset: usize = 0;
+
+        if (wo >= ro) {
+            if (self.buffer_capacity - wo >= payload.len) {
+                target_offset = wo;
+                wo += payload.len;
+            } else {
+                ro = self.read_offset.load(.acquire);
+                self.cached_read_offset = ro;
+                if (ro > payload.len) {
+                    target_offset = 0;
+                    wo = payload.len;
+                } else {
+                    return false;
+                }
+            }
+        } else {
+            if (ro - wo > payload.len) {
+                target_offset = wo;
+                wo += payload.len;
+            } else {
+                ro = self.read_offset.load(.acquire);
+                self.cached_read_offset = ro;
+                if (ro > wo and ro - wo > payload.len) {
+                    target_offset = wo;
+                    wo += payload.len;
+                } else {
+                    return false;
+                }
+            }
+        }
+
+        @memcpy(self.buffer[target_offset .. target_offset + payload.len], payload);
+        self.write_offset.store(wo, .release);
+
+        desc_slot.* = root.PacketDescriptor{
+            .timestamp_ns = timestamp,
+            .offset = @intCast(target_offset),
+            .len = @intCast(payload.len),
+        };
+        self.desc_ring.commit();
+        return true;
+    }
+
+    pub inline fn popPacket(self: *DynamicBipRing, out_desc: *root.PacketDescriptor) ?[]const u8 {
+        const desc = self.desc_ring.popValue() orelse return null;
+        out_desc.* = desc;
+        const end_offset = desc.offset + desc.len;
+        self.read_offset.store(end_offset, .release);
+        return self.buffer[desc.offset..end_offset];
+    }
+};
+
+pub export fn awp_zig_bipring_create(buffer_capacity: usize, desc_capacity: usize, out_ring: *?*anyopaque) callconv(.c) c_int {
+    if (!std.math.isPowerOfTwo(buffer_capacity) or buffer_capacity < 64) return -22;
+    if (!std.math.isPowerOfTwo(desc_capacity) or desc_capacity < 2) return -22;
+    const ring = DynamicBipRing.init(std.heap.c_allocator, buffer_capacity, desc_capacity) catch return -12;
+    out_ring.* = @ptrCast(ring);
+    return 0;
+}
+
+pub export fn awp_zig_bipring_destroy(ring_ptr: ?*anyopaque) callconv(.c) void {
+    if (ring_ptr) |ptr| {
+        const ring: *DynamicBipRing = @ptrCast(@alignCast(ptr));
+        ring.deinit();
+    }
+}
+
+pub export fn awp_zig_bipring_push(ring_ptr: ?*anyopaque, payload: ?[*]const u8, len: usize, timestamp_ns: u64) callconv(.c) c_int {
+    if (ring_ptr == null or (payload == null and len > 0)) return -22;
+    const ring: *DynamicBipRing = @ptrCast(@alignCast(ring_ptr.?));
+    const slice = if (payload) |p| p[0..len] else &[_]u8{};
+    if (ring.pushPacket(slice, timestamp_ns)) {
+        return 0;
+    }
+    return -11; // EAGAIN / Full
+}
+
+pub export fn awp_zig_bipring_pop(ring_ptr: ?*anyopaque, out_payload: *[*]const u8, out_len: *usize, out_desc: *root.PacketDescriptor) callconv(.c) c_int {
+    if (ring_ptr == null) return -22;
+    const ring: *DynamicBipRing = @ptrCast(@alignCast(ring_ptr.?));
+    if (ring.popPacket(out_desc)) |slice| {
+        out_payload.* = slice.ptr;
+        out_len.* = slice.len;
+        return 0;
+    }
+    return -11; // EAGAIN / Empty
+}

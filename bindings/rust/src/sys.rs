@@ -58,6 +58,14 @@ pub struct AwpClaim {
 
 pub type AwpProcessFn = unsafe extern "C" fn(frame: *const AwpFrame, user: *mut c_void) -> c_int;
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacketDescriptor {
+    pub timestamp_ns: u64,
+    pub offset: u32,
+    pub len: u32,
+}
+
 extern "C" {
     pub fn awp_zig_pool_create(
         workers: u32,
@@ -69,16 +77,9 @@ extern "C" {
 
     pub fn awp_zig_pool_destroy(pool: *mut c_void);
 
-    pub fn awp_zig_claim(
-        pool: *mut c_void,
-        shard: u32,
-        out_claim: *mut AwpClaim,
-    ) -> c_int;
+    pub fn awp_zig_claim(pool: *mut c_void, shard: u32, out_claim: *mut AwpClaim) -> c_int;
 
-    pub fn awp_zig_commit(
-        pool: *mut c_void,
-        claim: *const AwpClaim,
-    ) -> c_int;
+    pub fn awp_zig_commit(pool: *mut c_void, claim: *const AwpClaim) -> c_int;
 
     pub fn awp_zig_submit(
         pool: *mut c_void,
@@ -88,6 +89,36 @@ extern "C" {
         payload_len: usize,
         flags: u32,
     ) -> c_int;
+
+    pub fn awp_zig_bip_create(capacity: usize, out_bip: *mut *mut c_void) -> c_int;
+    pub fn awp_zig_bip_destroy(bip: *mut c_void);
+    pub fn awp_zig_bip_reserve(bip: *mut c_void, size: usize, out_ptr: *mut *mut u8) -> c_int;
+    pub fn awp_zig_bip_commit(bip: *mut c_void, size: usize);
+    pub fn awp_zig_bip_peek(
+        bip: *mut c_void,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> c_int;
+    pub fn awp_zig_bip_consume(bip: *mut c_void, size: usize);
+
+    pub fn awp_zig_bipring_create(
+        buffer_capacity: usize,
+        desc_capacity: usize,
+        out_ring: *mut *mut c_void,
+    ) -> c_int;
+    pub fn awp_zig_bipring_destroy(ring: *mut c_void);
+    pub fn awp_zig_bipring_push(
+        ring: *mut c_void,
+        payload: *const u8,
+        len: usize,
+        timestamp_ns: u64,
+    ) -> c_int;
+    pub fn awp_zig_bipring_pop(
+        ring: *mut c_void,
+        out_payload: *mut *const u8,
+        out_len: *mut usize,
+        out_desc: *mut PacketDescriptor,
+    ) -> c_int;
 }
 
 const _: () = {
@@ -95,4 +126,6 @@ const _: () = {
     assert!(std::mem::align_of::<BookUpdate64>() == 64);
     assert!(std::mem::size_of::<Trade64>() == 64);
     assert!(std::mem::align_of::<Trade64>() == 64);
+    assert!(std::mem::size_of::<PacketDescriptor>() == 16);
+    assert!(std::mem::align_of::<PacketDescriptor>() == 8);
 };

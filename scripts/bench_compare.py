@@ -124,12 +124,13 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("pool_throughput_mps", "Pool Throughput (M msg/s)", True),
         ("spsc_throughput_mops", "Pure SPSC (M ops/s)", True),
         ("spsc64_throughput_mops", "64B POD Ring (M ops/s)", True),
+        ("bip_throughput_mops", "BipBuffer (M pkts/s)", True),
     ]
 
     for key, label, higher_is_better in tput_metrics:
         if key in curr:
             c_val = float(curr[key])
-            if key in base:
+            if key in base and key in base:
                 b_val = float(base[key])
                 delta_pct = ((c_val - b_val) / b_val) * 100.0 if b_val > 0 else 0.0
                 delta_str = format_delta(delta_pct, higher_is_better)
@@ -153,6 +154,7 @@ def compare_benchmarks(baseline_file: str, current_file: str, history_file: str,
         ("pool_max_ns", "Pool Max Latency (ns)", False),
         ("spsc_mean_ns", "Pure SPSC Latency (ns)", False),
         ("spsc64_mean_ns", "64B POD Latency (ns)", False),
+        ("bip_mean_ns", "BipBuffer Latency (ns)", False),
     ]
 
     for key, label, higher_is_better in lat_metrics:

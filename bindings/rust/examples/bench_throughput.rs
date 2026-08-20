@@ -19,7 +19,10 @@ fn main() {
     })
     .expect("Failed to initialize Zig worker pool from Rust");
 
-    println!("Pool initialized with {} workers. Starting Zero-Copy dispatch...", workers);
+    println!(
+        "Pool initialized with {} workers. Starting Zero-Copy dispatch...",
+        workers
+    );
 
     let start = Instant::now();
 
@@ -51,8 +54,15 @@ fn main() {
 
     println!("--------------------------------------------------");
     println!("Total Messages Processed: {}", num_messages);
-    println!("Elapsed Time:             {:.2} ms", elapsed.as_secs_f64() * 1000.0);
-    println!("Throughput:               {:.2} M msg/sec ({:.0} msg/sec)", rps / 1_000_000.0, rps);
+    println!(
+        "Elapsed Time:             {:.2} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
+    println!(
+        "Throughput:               {:.2} M msg/sec ({:.0} msg/sec)",
+        rps / 1_000_000.0,
+        rps
+    );
     println!("Mean Latency:             {:.2} ns/msg", avg_latency_ns);
     println!("==================================================");
 }

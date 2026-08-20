@@ -12,8 +12,8 @@ pub mod sys;
 
 pub use error::AwpError;
 pub use sys::{
-    AwpClaim, AwpFrame, BookUpdate64, Trade64, AWP_FEED_MAX, AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX,
-    AWP_SYMBOL_MAX,
+    AwpClaim, AwpFrame, BookUpdate64, PacketDescriptor, Trade64, AWP_FEED_MAX, AWP_FLAG_DROPPED,
+    AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX,
 };
 
 use std::os::raw::{c_int, c_void};
@@ -69,14 +69,24 @@ impl<'a> FrameView<'a> {
     /// Feed label as a string slice.
     #[inline]
     pub fn feed(&self) -> &str {
-        let nul_pos = self.raw.feed.iter().position(|&b| b == 0).unwrap_or(self.raw.feed.len());
+        let nul_pos = self
+            .raw
+            .feed
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.raw.feed.len());
         std::str::from_utf8(&self.raw.feed[..nul_pos]).unwrap_or("")
     }
 
     /// Symbol label as a string slice.
     #[inline]
     pub fn symbol(&self) -> &str {
-        let nul_pos = self.raw.symbol.iter().position(|&b| b == 0).unwrap_or(self.raw.symbol.len());
+        let nul_pos = self
+            .raw
+            .symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.raw.symbol.len());
         std::str::from_utf8(&self.raw.symbol[..nul_pos]).unwrap_or("")
     }
 
@@ -211,11 +221,7 @@ unsafe impl Sync for AsyncWorkerPool {}
 
 impl AsyncWorkerPool {
     /// Create a new asynchronous worker pool.
-    pub fn new<F>(
-        workers: u32,
-        queue_capacity: u32,
-        callback: F,
-    ) -> Result<Self, AwpError>
+    pub fn new<F>(workers: u32, queue_capacity: u32, callback: F) -> Result<Self, AwpError>
     where
         F: Fn(&FrameView) -> i32 + Send + Sync + 'static,
     {
@@ -302,6 +308,174 @@ impl Drop for AsyncWorkerPool {
         if !self.handle.is_null() {
             unsafe {
                 sys::awp_zig_pool_destroy(self.handle);
+            }
+            self.handle = ptr::null_mut();
+        }
+    }
+}
+
+/// High-Performance Zero-Copy Variable-Length Bipartite Ring Buffer
+pub struct BipBuffer {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for BipBuffer {}
+unsafe impl Sync for BipBuffer {}
+
+impl BipBuffer {
+    /// Create a new BipBuffer with specified byte capacity (must be power of two >= 64).
+    pub fn new(capacity: usize) -> Result<Self, AwpError> {
+        let mut handle = ptr::null_mut();
+        let rc = unsafe { sys::awp_zig_bip_create(capacity, &mut handle) };
+        if rc == 0 {
+            Ok(Self { handle })
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Zero-Copy Reserve: request a contiguous mutable slice of exactly `size` bytes.
+    pub fn reserve(&mut self, size: usize) -> Option<&mut [u8]> {
+        let mut out_ptr = ptr::null_mut();
+        let rc = unsafe { sys::awp_zig_bip_reserve(self.handle, size, &mut out_ptr) };
+        if rc == 0 && !out_ptr.is_null() {
+            Some(unsafe { std::slice::from_raw_parts_mut(out_ptr, size) })
+        } else {
+            None
+        }
+    }
+
+    /// Commit previously reserved bytes.
+    pub fn commit(&mut self, size: usize) {
+        unsafe { sys::awp_zig_bip_commit(self.handle, size) };
+    }
+
+    /// Push contiguous data into BipBuffer (convenience copy wrapper).
+    pub fn push(&mut self, data: &[u8]) -> bool {
+        if let Some(buf) = self.reserve(data.len()) {
+            buf.copy_from_slice(data);
+            self.commit(data.len());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Zero-Copy Peek: view the next readable contiguous slice.
+    pub fn peek(&self) -> Option<&[u8]> {
+        let mut out_ptr = ptr::null();
+        let mut out_len = 0;
+        let rc = unsafe { sys::awp_zig_bip_peek(self.handle, &mut out_ptr, &mut out_len) };
+        if rc == 0 && !out_ptr.is_null() && out_len > 0 {
+            Some(unsafe { std::slice::from_raw_parts(out_ptr, out_len) })
+        } else {
+            None
+        }
+    }
+
+    /// Mark `size` bytes as consumed.
+    pub fn consume(&mut self, size: usize) {
+        unsafe { sys::awp_zig_bip_consume(self.handle, size) };
+    }
+}
+
+impl Drop for BipBuffer {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                sys::awp_zig_bip_destroy(self.handle);
+            }
+            self.handle = ptr::null_mut();
+        }
+    }
+}
+
+/// A discrete packet view popped from `BipRing`.
+pub struct PacketView<'a> {
+    payload: &'a [u8],
+    desc: sys::PacketDescriptor,
+}
+
+impl<'a> PacketView<'a> {
+    #[inline]
+    pub fn payload(&self) -> &[u8] {
+        self.payload
+    }
+
+    #[inline]
+    pub fn timestamp_ns(&self) -> u64 {
+        self.desc.timestamp_ns
+    }
+
+    #[inline]
+    pub fn offset(&self) -> u32 {
+        self.desc.offset
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.desc.len as usize
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.desc.len == 0
+    }
+}
+
+/// High-Performance Zero-Copy Variable-Length Packet Ring Buffer
+pub struct BipRing {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for BipRing {}
+unsafe impl Sync for BipRing {}
+
+impl BipRing {
+    /// Create a new BipRing with specified buffer byte capacity and descriptor queue capacity (powers of two).
+    pub fn new(buffer_capacity: usize, desc_capacity: usize) -> Result<Self, AwpError> {
+        let mut handle = ptr::null_mut();
+        let rc =
+            unsafe { sys::awp_zig_bipring_create(buffer_capacity, desc_capacity, &mut handle) };
+        if rc == 0 {
+            Ok(Self { handle })
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Push a variable-length packet payload with an ingress hardware timestamp.
+    /// Returns `true` if enqueued successfully, `false` if queue is full.
+    pub fn push_packet(&mut self, payload: &[u8], timestamp_ns: u64) -> bool {
+        let rc = unsafe {
+            sys::awp_zig_bipring_push(self.handle, payload.as_ptr(), payload.len(), timestamp_ns)
+        };
+        rc == 0
+    }
+
+    /// Pop the next variable-length packet payload with zero copies.
+    pub fn pop_packet(&mut self) -> Option<PacketView<'_>> {
+        let mut out_ptr = ptr::null();
+        let mut out_len = 0;
+        let mut desc: sys::PacketDescriptor = unsafe { std::mem::zeroed() };
+        let rc =
+            unsafe { sys::awp_zig_bipring_pop(self.handle, &mut out_ptr, &mut out_len, &mut desc) };
+        if rc == 0 && !out_ptr.is_null() && out_len > 0 {
+            Some(PacketView {
+                payload: unsafe { std::slice::from_raw_parts(out_ptr, out_len) },
+                desc,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for BipRing {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                sys::awp_zig_bipring_destroy(self.handle);
             }
             self.handle = ptr::null_mut();
         }
