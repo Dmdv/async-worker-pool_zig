@@ -206,7 +206,7 @@ pub fn SpscRing(comptime T: type, comptime capacity: usize) type {
         const mask = capacity - 1;
         const PREFETCH_DISTANCE = 4;
 
-        items: []align(64) T,
+        items: []T,
         head: std.atomic.Value(usize) align(64),
         cached_tail: usize align(64),
         tail: std.atomic.Value(usize) align(64),
@@ -214,9 +214,9 @@ pub fn SpscRing(comptime T: type, comptime capacity: usize) type {
         allocator: ?std.mem.Allocator,
         slab: ?*HftMemorySlab,
 
-        /// Initialize with standard heap allocator (strictly 64-byte cacheline aligned)
+        /// Initialize with standard heap allocator
         pub fn init(allocator: std.mem.Allocator) !Self {
-            const items = try allocator.alignedAlloc(T, .@"64", capacity);
+            const items = try allocator.alloc(T, capacity);
             return Self{
                 .items = items,
                 .head = std.atomic.Value(usize).init(0),
@@ -232,7 +232,7 @@ pub fn SpscRing(comptime T: type, comptime capacity: usize) type {
         pub fn initSlab(slab: *HftMemorySlab) !Self {
             const needed_bytes = capacity * @sizeOf(T);
             if (slab.len < needed_bytes) return error.SlabTooSmall;
-            const ptr: [*]align(64) T = @ptrCast(@alignCast(slab.ptr));
+            const ptr: [*]T = @ptrCast(@alignCast(slab.ptr));
             return Self{
                 .items = ptr[0..capacity],
                 .head = std.atomic.Value(usize).init(0),
