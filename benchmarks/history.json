@@ -102,9 +102,9 @@
   {
     "id": "phase4-reactor",
     "name": "Phase 4: Fast-Path Trading Reactor & Off-Path Pipeline",
-    "commit": "HEAD",
-    "branch": "feat/phase4-hybrid-reactor-offpath",
-    "timestamp": "2026-08-20T18:00:00Z",
+    "commit": "de7b7d1",
+    "branch": "master",
+    "timestamp": "2026-08-20T20:05:00Z",
     "description": "Single-threaded fast-path core generating OrderSignal64 in sub-300ns with non-blocking SPSC fanout across Risk, Audit, and Telemetry off-path workers",
     "metrics": {
       "engine": "zig-0.16",
