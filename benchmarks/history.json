@@ -18,7 +18,7 @@
       "pool_p9999_ns": 251000,
       "pool_max_ns": 254000,
       "spsc_throughput_mops": 98.07,
-      "spsc_mean_ns": 10.20
+      "spsc_mean_ns": 10.2
     }
   },
   {
@@ -41,6 +41,33 @@
       "pool_max_ns": 128000,
       "spsc_throughput_mops": 171.76,
       "spsc_mean_ns": 5.82
+    }
+  },
+  {
+    "id": "phase2-comptime-spsc-64b-pod",
+    "name": "Phase 2: Generic 64B POD Ring & Comptime SPSC",
+    "commit": "14f7510",
+    "branch": "master",
+    "timestamp": "2026-08-20T16:51:50.301718+00:00",
+    "description": "Generic comptime-parameterized SPSC ring with 64-byte POD cacheline alignment (BookUpdate64/Trade64), 2-phase peek/consume, and HugePage slab backing",
+    "metrics": {
+      "engine": "zig-0.16",
+      "num_messages": 1000000,
+      "num_workers": 4,
+      "pool_throughput_mps": 6.43,
+      "pool_wall_ms": 155.42,
+      "pool_mean_ns": 629.84,
+      "pool_min_ns": 0,
+      "pool_p50_ns": 0,
+      "pool_p90_ns": 1000,
+      "pool_p99_ns": 4000,
+      "pool_p999_ns": 109000,
+      "pool_p9999_ns": 156000,
+      "pool_max_ns": 160000,
+      "spsc_throughput_mops": 94.38,
+      "spsc_mean_ns": 10.6,
+      "spsc64_throughput_mops": 21.68,
+      "spsc64_mean_ns": 46.12
     }
   }
 ]
