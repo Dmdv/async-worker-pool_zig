@@ -34,5 +34,11 @@ check-rust:
 bench-rust:
 	cd bindings/rust && cargo run --release --example bench_throughput
 
+docs:
+	mdbook build
+
+docs-serve:
+	mdbook serve --open
+
 clean:
-	rm -rf .zig-cache zig-cache zig-out bindings/rust/target /tmp/awp_current_bench.json
+	rm -rf .zig-cache zig-cache zig-out bindings/rust/target book /tmp/awp_current_bench.json

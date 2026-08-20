@@ -9,3 +9,4 @@ zig-out/
 target/
 **/target/
 bindings/rust/target/
+book/
