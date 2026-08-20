@@ -19,6 +19,36 @@ pub struct AwpFrame {
     pub flags: u32,
 }
 
+/// 64-Byte Cache-Line Aligned Financial Top-of-Book Update (Zero-Copy POD)
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BookUpdate64 {
+    pub timestamp_ns: u64,
+    pub seq: u64,
+    pub symbol_id: u32,
+    pub flags: u32,
+    pub bid_price: f64,
+    pub bid_qty: f64,
+    pub ask_price: f64,
+    pub ask_qty: f64,
+    pub _reserved: [u8; 8],
+}
+
+/// 64-Byte Cache-Line Aligned Financial Trade Event (Zero-Copy POD)
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trade64 {
+    pub timestamp_ns: u64,
+    pub trade_id: u64,
+    pub price: f64,
+    pub qty: f64,
+    pub symbol_id: u32,
+    pub side: u32,
+    pub flags: u32,
+    pub taker_order_id: u32,
+    pub _reserved: [u8; 16],
+}
+
 #[repr(C)]
 pub struct AwpClaim {
     pub frame: *mut AwpFrame,

@@ -11,7 +11,10 @@ pub mod error;
 pub mod sys;
 
 pub use error::AwpError;
-pub use sys::{AWP_FEED_MAX, AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX, AWP_SYMBOL_MAX};
+pub use sys::{
+    AwpClaim, AwpFrame, BookUpdate64, Trade64, AWP_FEED_MAX, AWP_FLAG_DROPPED, AWP_PAYLOAD_MAX,
+    AWP_SYMBOL_MAX,
+};
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
