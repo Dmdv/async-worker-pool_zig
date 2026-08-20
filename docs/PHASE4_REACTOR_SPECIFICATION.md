@@ -53,7 +53,7 @@ pub const OrderSignal64 = extern struct {
     symbol_id: u32,              // 4B: Integer instrument ID
     side: u32,                   // 4B: 0 = Buy, 1 = Sell
     action: u32,                 // 4B: 1 = New, 2 = Cancel, 3 = Replace
-    flags: u32,                  // 4B: 0x01 = IOC, 0x02 = PostOnly, 0x04 = Market
+    flags: u32,                  // 4B: 0x01 = IOC, 0x02 = PostOnly
     _reserved: [8]u8,            // 8B: Zero-padding to exactly 64 bytes (1 cache line)
 };
 ```
