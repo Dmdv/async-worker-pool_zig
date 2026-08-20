@@ -459,6 +459,8 @@ pub fn main() !void {
         .ask_qty = 2.0,
     };
 
+    var total_t2t_ns: u64 = 0;
+    var signal_count: u64 = 0;
     const reactor_t0 = awp.nowNs();
     for (0..REACTOR_TICKS) |i| {
         dummy_update.timestamp_ns = awp.nowNs();
@@ -466,23 +468,31 @@ pub fn main() !void {
         dummy_update.bid_price = 65000.0 + @as(f64, @floatFromInt(i % 100)) * 0.1;
         dummy_update.ask_price = dummy_update.bid_price + 0.5;
 
-        _ = reactor.processTick(dummy_update);
+        if (reactor.processTick(dummy_update)) |sig| {
+            const egress_ts = awp.nowNs();
+            if (egress_ts >= sig.ingress_ts_ns) {
+                total_t2t_ns +%= (egress_ts - sig.ingress_ts_ns);
+            }
+            signal_count += 1;
+        }
     }
     const reactor_t1 = awp.nowNs();
 
     const reactor_duration_ns = @as(f64, @floatFromInt(reactor_t1 - reactor_t0));
     const reactor_duration_sec = reactor_duration_ns / 1_000_000_000.0;
     const reactor_throughput = @as(f64, @floatFromInt(REACTOR_TICKS)) / reactor_duration_sec;
-    const reactor_mean_lat = reactor_duration_ns / @as(f64, @floatFromInt(REACTOR_TICKS));
+    const reactor_service_time = reactor_duration_ns / @as(f64, @floatFromInt(REACTOR_TICKS));
+    const reactor_mean_t2t = if (signal_count > 0) @as(f64, @floatFromInt(total_t2t_ns)) / @as(f64, @floatFromInt(signal_count)) else reactor_service_time;
 
     var wait_attempts: usize = 0;
     while ((!offpath.risk_ring.isEmpty() or !offpath.audit_ring.isEmpty() or !offpath.telemetry_ring.isEmpty()) and wait_attempts < 1000) : (wait_attempts += 1) {
         awp.sleepNs(100_000);
     }
 
-    std.debug.print("Trading Reactor Fast-Path Throughput: {d:.2} M ticks/sec (Tick-to-Trade: {d:.2} ns)\n", .{
+    std.debug.print("Trading Reactor Fast-Path Throughput: {d:.2} M ticks/sec (Loop Period: {d:.2} ns | Tick-to-Trade: {d:.2} ns)\n", .{
         reactor_throughput / 1e6,
-        reactor_mean_lat,
+        reactor_service_time,
+        reactor_mean_t2t,
     });
     std.debug.print("Off-Path Workers Processed: Risk={d} | Audit={d} | Telemetry={d} | Overruns={d}\n\n", .{
         offpath.risk_processed.load(.monotonic),
@@ -544,7 +554,7 @@ pub fn main() !void {
             bip_throughput / 1e6,
             bip_service_time,
             reactor_throughput / 1e6,
-            reactor_mean_lat,
+            reactor_service_time,
         });
         var path_z: [1024:0]u8 = undefined;
         @memcpy(path_z[0..path.len], path);

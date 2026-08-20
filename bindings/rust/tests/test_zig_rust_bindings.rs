@@ -220,7 +220,7 @@ fn test_zig_reactor_and_offpath_pipeline() {
     offpath.start().expect("Failed to start OffPathPipeline");
 
     let mut reactor = awp_zig_rs::TradingReactor::new().expect("Failed to create TradingReactor");
-    reactor.bind_offpath(&offpath);
+    reactor.bind_offpath(&mut offpath);
 
     for i in 0..100 {
         let update = awp_zig_rs::BookUpdate64 {
@@ -235,7 +235,7 @@ fn test_zig_reactor_and_offpath_pipeline() {
             _reserved: [0; 8],
         };
 
-        let sig = reactor.process_tick(&update).expect("Signal expected");
+        let sig = reactor.process_tick(&update).expect("FFI call failed").expect("Signal expected");
         assert_eq!(sig.price, update.bid_price);
         assert_eq!(sig.qty, update.bid_qty);
         assert_eq!(sig.side, 0); // Buy
@@ -244,9 +244,9 @@ fn test_zig_reactor_and_offpath_pipeline() {
     assert_eq!(reactor.overruns(), 0);
 
     let mut waited = 0;
-    while (offpath.stats().risk_processed < 100
-        || offpath.stats().audit_processed < 100
-        || offpath.stats().telemetry_processed < 100)
+    while (reactor.offpath_stats().map_or(0, |s| s.risk_processed) < 100
+        || reactor.offpath_stats().map_or(0, |s| s.audit_processed) < 100
+        || reactor.offpath_stats().map_or(0, |s| s.telemetry_processed) < 100)
         && waited < 100
     {
         thread::sleep(Duration::from_millis(10));

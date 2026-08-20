@@ -1,6 +1,11 @@
-.PHONY: all check fmt lint bench check-rust bench-rust bench-baseline bench-compare clean
+.PHONY: all check fmt lint bench check-rust bench-rust bench-baseline bench-compare clean hooks-install docs docs-serve wiki-sync
 
 all: lint check check-rust
+
+hooks-install:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-push
+	@echo "✓ Git pre-push hook installed successfully (.githooks/pre-push)"
 
 fmt:
 	zig fmt src/*.zig bench/*.zig

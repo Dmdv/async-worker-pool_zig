@@ -46,13 +46,16 @@ pub inline fn nowNs() u64 {
     return @as(u64, @intCast(ts.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(ts.tv_nsec));
 }
 
-/// Nanosecond sleep helper using POSIX nanosleep
+/// Nanosecond sleep helper using POSIX nanosleep with EINTR restart loop
 pub inline fn sleepNs(ns: u64) void {
-    const req = c_time.struct_timespec{
+    var req = c_time.struct_timespec{
         .tv_sec = @intCast(ns / 1_000_000_000),
         .tv_nsec = @intCast(ns % 1_000_000_000),
     };
-    _ = c_time.nanosleep(&req, null);
+    var rem: c_time.struct_timespec = undefined;
+    while (c_time.nanosleep(&req, &rem) != 0) {
+        req = rem;
+    }
 }
 
 /// Pin current thread to Apple Silicon P-Core (Performance Core)
@@ -589,6 +592,10 @@ pub fn LockFreeRing(comptime capacity: usize) type {
             }
         }
 
+        /// Pop a frame from the ring.
+        /// NOTE: tryPop releases the cell sequence immediately upon returning the pointer.
+        /// For concurrent zero-copy pipelines where processing must precede slot release,
+        /// prefer `processOne` to guarantee producer cannot overwrite payload during consumer handling.
         pub inline fn tryPop(self: *Self) ?*Frame {
             const pos = self.dequeue_pos.load(.monotonic);
             const cell = &self.cells[pos & mask];
@@ -1077,8 +1084,8 @@ pub fn TradingReactor(comptime capacity: usize) type {
             self.telemetry_ring = ring;
         }
 
-        /// Process a 64-byte market data tick on the Fast-Path Core (Zero Syscalls, Zero Locks)
-        pub inline fn processTick(self: *Self, update: BookUpdate64) ?OrderSignal64 {
+        /// Process a 64-byte market data tick on the Fast-Path Core with provided timestamp (Zero Syscalls, Zero Locks)
+        pub inline fn processTickWithTs(self: *Self, update: BookUpdate64, now_ns: u64) ?OrderSignal64 {
             self.processed_ticks += 1;
             self.best_bid_price = update.bid_price;
             self.best_ask_price = update.ask_price;
@@ -1089,7 +1096,7 @@ pub fn TradingReactor(comptime capacity: usize) type {
             // Simple fast-path rule: if valid bid/ask spread, quote at best bid
             if (update.ask_price > update.bid_price and update.bid_price > 0) {
                 const signal = OrderSignal64{
-                    .timestamp_ns = nowNs(),
+                    .timestamp_ns = now_ns,
                     .ingress_ts_ns = update.timestamp_ns,
                     .order_id = self.next_order_id,
                     .symbol_id = update.symbol_id,
@@ -1107,6 +1114,11 @@ pub fn TradingReactor(comptime capacity: usize) type {
                 return signal;
             }
             return null;
+        }
+
+        /// Process a 64-byte market data tick on the Fast-Path Core using nowNs()
+        pub inline fn processTick(self: *Self, update: BookUpdate64) ?OrderSignal64 {
+            return self.processTickWithTs(update, nowNs());
         }
 
         inline fn fanOutNonBlocking(self: *Self, signal: OrderSignal64) void {
@@ -1252,8 +1264,14 @@ pub const OffPathPipeline = struct {
             }
         }
         var exit_count: u64 = 0;
-        while (self.risk_ring.popValue()) |_| {
+        while (self.risk_ring.popValue()) |sig| {
             exit_count += 1;
+            if (sig.side == 0) {
+                position += sig.qty;
+            } else {
+                position -= sig.qty;
+            }
+            notional += sig.price * sig.qty;
         }
         if (exit_count > 0) {
             _ = self.risk_processed.fetchAdd(exit_count, .monotonic);
@@ -1278,8 +1296,9 @@ pub const OffPathPipeline = struct {
             }
         }
         var exit_count: u64 = 0;
-        while (self.audit_ring.popValue()) |_| {
+        while (self.audit_ring.popValue()) |sig| {
             exit_count += 1;
+            checksum +%= sig.order_id ^ sig.timestamp_ns;
         }
         if (exit_count > 0) {
             _ = self.audit_processed.fetchAdd(exit_count, .monotonic);
@@ -1307,10 +1326,17 @@ pub const OffPathPipeline = struct {
             }
         }
         var exit_count: u64 = 0;
-        while (self.telemetry_ring.popValue()) |_| {
+        var exit_lat: u64 = 0;
+        while (self.telemetry_ring.popValue()) |sig| {
             exit_count += 1;
+            if (sig.timestamp_ns >= sig.ingress_ts_ns) {
+                exit_lat +%= (sig.timestamp_ns - sig.ingress_ts_ns);
+            }
         }
         if (exit_count > 0) {
+            if (exit_lat > 0) {
+                _ = self.total_latency_ns.fetchAdd(exit_lat, .monotonic);
+            }
             _ = self.telemetry_processed.fetchAdd(exit_count, .monotonic);
         }
     }

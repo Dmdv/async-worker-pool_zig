@@ -64,13 +64,21 @@ cp "$DOCS_DIR/primitives/spsc-ring.md" "$WIKI_DIR/SPSC-Ring-Buffers.md"
 cp "$DOCS_DIR/primitives/bip-buffer.md" "$WIKI_DIR/Bipartite-Buffers-and-BipRing.md"
 cp "$DOCS_DIR/primitives/worker-pool.md" "$WIKI_DIR/Multi-Threaded-Worker-Pool.md"
 cp "$DOCS_DIR/primitives/trading-reactor.md" "$WIKI_DIR/Trading-Reactor-and-Off-Path.md"
+cp "$DOCS_DIR/PHASE4_REACTOR_SPECIFICATION.md" "$WIKI_DIR/Phase4-Reactor-Specification.md"
 cp "$DOCS_DIR/ffi/c-abi.md" "$WIKI_DIR/C-ABI-Specification.md"
 cp "$DOCS_DIR/ffi/rust-bindings.md" "$WIKI_DIR/Rust-FFI-Bindings.md"
 cp "$DOCS_DIR/benchmarks/benchmark-suite.md" "$WIKI_DIR/HFT-Benchmark-Methodology.md"
 cp "$DOCS_DIR/HFT_EVOLUTION_ROADMAP.md" "$WIKI_DIR/HFT-Evolution-Roadmap.md"
 
 # 3. Transform relative markdown links to Wiki links and strip emojis from document bodies
-"$REPO_DIR/venv/bin/python" - << 'PY'
+PYTHON_BIN="python3"
+if [ -f "$REPO_DIR/venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_DIR/venv/bin/python"
+elif [ -f "$REPO_DIR/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_DIR/.venv/bin/python"
+fi
+
+"$PYTHON_BIN" - << 'PY'
 import os
 import re
 
@@ -86,6 +94,8 @@ replacements = {
     r'primitives/bip-buffer\.md': 'Bipartite-Buffers-and-BipRing',
     r'primitives/worker-pool\.md': 'Multi-Threaded-Worker-Pool',
     r'primitives/trading-reactor\.md': 'Trading-Reactor-and-Off-Path',
+    r'PHASE4_REACTOR_SPECIFICATION\.md': 'Phase4-Reactor-Specification',
+    r'docs/PHASE4_REACTOR_SPECIFICATION\.md': 'Phase4-Reactor-Specification',
     r'ffi/c-abi\.md': 'C-ABI-Specification',
     r'ffi/rust-bindings\.md': 'Rust-FFI-Bindings',
     r'benchmarks/benchmark-suite\.md': 'HFT-Benchmark-Methodology',

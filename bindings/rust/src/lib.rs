@@ -509,9 +509,12 @@ impl Drop for BipRing {
 /// High-performance Single-Threaded Trading Reactor (Critical Fast-Path)
 pub struct TradingReactor<'a> {
     handle: *mut c_void,
-    _marker: std::marker::PhantomData<&'a OffPathPipeline>,
+    offpath: Option<&'a mut OffPathPipeline>,
 }
 
+/// Safety: TradingReactor owns its underlying C pointer uniquely and is strictly `!Sync`.
+/// Moving across threads is safe before starting the execution loop, but in production
+/// HFT pipelines it is designed to be initialized and executed on a dedicated pinned P-Core thread.
 unsafe impl<'a> Send for TradingReactor<'a> {}
 
 impl<'a> TradingReactor<'a> {
@@ -522,7 +525,7 @@ impl<'a> TradingReactor<'a> {
         if rc == 0 {
             Ok(Self {
                 handle,
-                _marker: std::marker::PhantomData,
+                offpath: None,
             })
         } else {
             Err(AwpError::from(rc))
@@ -530,19 +533,36 @@ impl<'a> TradingReactor<'a> {
     }
 
     /// Process incoming 64-byte top-of-book market update on the Fast-Path Core.
-    /// Returns Some(OrderSignal64) if a signal was generated.
-    pub fn process_tick(&mut self, update: &BookUpdate64) -> Option<OrderSignal64> {
+    /// Returns Ok(Some(OrderSignal64)) if a signal was generated, Ok(None) if evaluated cleanly with no signal, or Err(AwpError) on FFI failure.
+    pub fn process_tick(&mut self, update: &BookUpdate64) -> Result<Option<OrderSignal64>, AwpError> {
         let mut signal: OrderSignal64 = unsafe { std::mem::zeroed() };
         let rc = unsafe { sys::awp_zig_reactor_process_tick(self.handle, update, &mut signal) };
         if rc == 0 {
-            Some(signal)
+            Ok(Some(signal))
+        } else if rc == 1 {
+            Ok(None)
         } else {
-            None
+            Err(AwpError::from(rc))
         }
     }
 
-    /// Bind to an OffPathPipeline's worker rings for zero-mutex fan-out.
-    pub fn bind_offpath(&mut self, offpath: &'a OffPathPipeline) {
+    /// Process incoming 64-byte top-of-book market update on the Fast-Path Core with provided timestamp.
+    /// Returns Ok(Some(OrderSignal64)) if a signal was generated, Ok(None) if evaluated cleanly with no signal, or Err(AwpError) on FFI failure.
+    pub fn process_tick_with_ts(&mut self, update: &BookUpdate64, now_ns: u64) -> Result<Option<OrderSignal64>, AwpError> {
+        let mut signal: OrderSignal64 = unsafe { std::mem::zeroed() };
+        let rc = unsafe { sys::awp_zig_reactor_process_tick_with_ts(self.handle, update, now_ns, &mut signal) };
+        if rc == 0 {
+            Ok(Some(signal))
+        } else if rc == 1 {
+            Ok(None)
+        } else {
+            Err(AwpError::from(rc))
+        }
+    }
+
+    /// Bind exclusively to an OffPathPipeline's worker rings for zero-mutex fan-out.
+    /// Guarantees a single producer at compile time.
+    pub fn bind_offpath(&mut self, offpath: &'a mut OffPathPipeline) {
         unsafe {
             let risk_ring = sys::awp_zig_offpath_get_risk_ring(offpath.handle);
             let audit_ring = sys::awp_zig_offpath_get_audit_ring(offpath.handle);
@@ -551,15 +571,22 @@ impl<'a> TradingReactor<'a> {
             sys::awp_zig_reactor_bind_audit_ring(self.handle, audit_ring);
             sys::awp_zig_reactor_bind_telemetry_ring(self.handle, telem_ring);
         }
+        self.offpath = Some(offpath);
     }
 
-    /// Unbind offpath rings to clear references.
-    pub fn unbind_offpath(&mut self) {
+    /// Query stats of the bound offpath pipeline while reactor holds the exclusive borrow.
+    pub fn offpath_stats(&self) -> Option<OffPathStats> {
+        self.offpath.as_ref().map(|o| o.stats())
+    }
+
+    /// Unbind offpath rings and release exclusive borrow.
+    pub fn unbind_offpath(&mut self) -> Option<&'a mut OffPathPipeline> {
         unsafe {
             sys::awp_zig_reactor_bind_risk_ring(self.handle, ptr::null_mut());
             sys::awp_zig_reactor_bind_audit_ring(self.handle, ptr::null_mut());
             sys::awp_zig_reactor_bind_telemetry_ring(self.handle, ptr::null_mut());
         }
+        self.offpath.take()
     }
 
     /// Get count of off-path ring overruns (signals dropped due to slow off-path workers).

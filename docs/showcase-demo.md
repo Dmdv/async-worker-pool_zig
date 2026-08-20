@@ -85,16 +85,16 @@ Decouples ultra-fast order generation (**~247 ns tick-to-trade**) from auxiliary
 ### Rust Idiomatic Example (`awp-zig-rs`)
 
 ```rust
-use awp_zig_rs::{BookUpdate64, OffPathPipeline, TradingReactor, Result};
+use awp_zig_rs::{AwpError, BookUpdate64, OffPathPipeline, TradingReactor};
 
-fn main() -> Result<()> {
+fn main() -> Result<(), AwpError> {
     // 1. Initialize and launch the concurrent background Off-Path Pipeline
     let mut offpath = OffPathPipeline::new(4096)?;
     offpath.start()?;
 
     // 2. Initialize the Single-Threaded Fast-Path Trading Reactor
     let mut reactor = TradingReactor::new()?;
-    reactor.bind_offpath(&offpath);
+    reactor.bind_offpath(&mut offpath);
 
     // 3. Process 64-byte top-of-book market update ticks
     let update = BookUpdate64 {
@@ -109,14 +109,15 @@ fn main() -> Result<()> {
         _reserved: [0; 8],
     };
 
-    if let Some(signal) = reactor.process_tick(&update) {
+    if let Some(signal) = reactor.process_tick(&update)? {
         println!("Generated Signal #{}: Buy {} @ {}", signal.order_id, signal.qty, signal.price);
         // Direct zero-hop egress to outbound network NIC Gateway (< 250 ns)
     }
 
-    let stats = offpath.stats();
-    println!("Processed Off-Path: Risk={}, Audit={}, Telemetry={}", 
-        stats.risk_processed, stats.audit_processed, stats.telemetry_processed);
+    // 4. Query off-path background worker statistics
+    let stats = reactor.offpath_stats().unwrap_or_default();
+    println!("Worker Stats: Risk={}, Audit={}, Telemetry={}, Overruns={}",
+        stats.risk_processed, stats.audit_processed, stats.telemetry_processed, reactor.overruns());
 
     Ok(())
 }
