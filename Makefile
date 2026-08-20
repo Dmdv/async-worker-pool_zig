@@ -9,7 +9,7 @@ lint:
 	zig fmt --check src/*.zig bench/*.zig
 
 check:
-	zig test src/root.zig
+	zig test src/root.zig -lc
 
 bench:
 	zig build bench -Doptimize=ReleaseFast
