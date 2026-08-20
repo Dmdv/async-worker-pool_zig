@@ -1,9 +1,9 @@
 # Phase 1 Hardware Hardening & Microarchitecture Specification
 
-**Document Version:** `1.0.0`  
-**Engine:** `async-worker-pool_zig` (Zig 0.16 Native HFT Engine)  
-**Status:** Completed & Empirically Calibrated  
-**Target Architectures:** Apple Silicon (ARM64 Darwin), Linux x86_64, Linux ARM64  
+**Document Version:** `1.0.0`
+**Engine:** `async-worker-pool_zig` (Zig 0.16 Native HFT Engine)
+**Status:** Completed & Empirically Calibrated
+**Target Architectures:** Apple Silicon (ARM64 Darwin), Linux x86_64, Linux ARM64
 
 ---
 
@@ -195,9 +195,9 @@ Measured on Apple Silicon Performance Cores with calibrated POSIX `clock_gettime
 
 | Implementation | Language / Runtime | Workload | Throughput | Median (p50) | p99 Latency | Mean Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`async-worker-pool_zig`** | Zig 0.16 Native | Multi-Threaded Pool (4 Pinned Workers) | **5.38 M msg/s** 🚀 | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
-| **`async-worker-pool_zig`** | Zig 0.16 Native | Pure Pointer SPSC Ring (0 CAS) | **171.76 M ops/s** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** |
-| **`awp-zig-rs`** | Rust on Zig 0.16 | Zero-Copy Safe FFI Bindings | **5.45 M msg/s** 🚀 | **< 150 ns** | **3.80 µs** (3,800 ns) | **920.0 ns** (0.92 µs) |
+| **`async-worker-pool_zig`** | Zig 0.16 Native | Multi-Threaded Pool (4 Pinned Workers) | **5.38 M msg/s** | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
+| **`async-worker-pool_zig`** | Zig 0.16 Native | Pure Pointer SPSC Ring (0 CAS) | **171.76 M ops/s** | **< 6 ns** | **< 8 ns** | **5.82 ns** |
+| **`awp-zig-rs`** | Rust on Zig 0.16 | Zero-Copy Safe FFI Bindings | **5.45 M msg/s** | **< 150 ns** | **3.80 µs** (3,800 ns) | **920.0 ns** (0.92 µs) |
 | **`async-worker-pool`** | C11 Native | Multi-Threaded Pool (32 Workers) | **0.52 M msg/s** | **3.46 µs** (3,458 ns) | **1.11 ms** (1,110,000 ns) | **2.11 µs** (2,109 ns) |
 | **`async-worker-pool`** | C11 Native | Raw SPSC Ring | **62.50 M ops/s** | **< 16 ns** | **< 20 ns** | **16.00 ns** |
 | **`awp-rs`** | Rust on C11 | Zero-Copy Safe FFI Bindings (`v0.3.0`) | **0.53 M msg/s** | **3.35 µs** (3,350 ns) | **1.15 ms** (1,150,000 ns) | **1.87 µs** (1,870 ns) |
@@ -209,12 +209,12 @@ Measured on Apple Silicon Performance Cores with calibrated POSIX `clock_gettime
 | Percentile | **Zig 0.16 Engine (Phase 1 Final)** | **C11 Engine** (`async-worker-pool`) | Delta / Improvement |
 | :--- | :--- | :--- | :--- |
 | **Min (Observed Single-Hop Floor)** | **15 ns** (0.015 µs) | **83 ns** (0.083 µs) | **5.5x Lower Floor** |
-| **p50 (Median)** | **< 100 ns** | **3.46 µs** (3,458 ns) | **> 34x Lower Latency** 🚀 |
-| **p90** | **1.00 µs** (1,000 ns) | **11.17 µs** (11,167 ns) | **11.2x Lower Latency** 🚀 |
-| **p99 (Tail Jitter)** | **1.00 µs** (1,000 ns) | **1.11 ms** (1,110,000 ns) | **1,110x Lower Jitter** 🚀 |
-| **p99.9** | **96.0 µs** (96,000 ns) | **1.27 ms** (1,270,000 ns) | **13.2x Lower Jitter** 🚀 |
-| **Max (Peak Outlier)** | **128.0 µs** (128,000 ns) | **1.67 ms** (1,670,000 ns) | **13.0x Lower Outlier** 🚀 |
-| **Pure SPSC Throughput** | **171.76 Million ops/sec** | **62.50 Million ops/sec** | **2.75x Faster (5.82 ns/op)** 🚀 |
+| **p50 (Median)** | **< 100 ns** | **3.46 µs** (3,458 ns) | **> 34x Lower Latency** |
+| **p90** | **1.00 µs** (1,000 ns) | **11.17 µs** (11,167 ns) | **11.2x Lower Latency** |
+| **p99 (Tail Jitter)** | **1.00 µs** (1,000 ns) | **1.11 ms** (1,110,000 ns) | **1,110x Lower Jitter** |
+| **p99.9** | **96.0 µs** (96,000 ns) | **1.27 ms** (1,270,000 ns) | **13.2x Lower Jitter** |
+| **Max (Peak Outlier)** | **128.0 µs** (128,000 ns) | **1.67 ms** (1,670,000 ns) | **13.0x Lower Outlier** |
+| **Pure SPSC Throughput** | **171.76 Million ops/sec** | **62.50 Million ops/sec** | **2.75x Faster (5.82 ns/op)** |
 
 ---
 

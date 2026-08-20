@@ -6,14 +6,14 @@ In sub-microsecond trading systems, dynamic page faults and Translation Lookasid
 
 ---
 
-## 🛑 The TLB Miss & Page Fault Bottleneck
+## The TLB Miss & Page Fault Bottleneck
 
 - **Standard 4KB Pages:** A 64MB buffer requires 16,384 distinct page table entries. Under heavy random access, the CPU L1/L2 TLB caches are constantly evicted, triggering slow multi-level hardware page table walks (50–150 ns penalty per miss).
 - **Minor Page Faults:** Linux and macOS allocate virtual memory lazily on `mmap`. The first write to an untouched page triggers a CPU interrupt and OS kernel fault handler (1–5 µs latency spike).
 
 ---
 
-## ⚡ `HftMemorySlab` Architecture
+## `HftMemorySlab` Architecture
 
 `HftMemorySlab` eliminates jitter through a four-stage allocation protocol:
 
@@ -38,7 +38,7 @@ graph TD
 
 ---
 
-## 🛠 Backing Rings with HugePages
+## Backing Rings with HugePages
 
 All AWP rings support direct slab initialization:
 

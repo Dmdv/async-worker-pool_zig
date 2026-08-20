@@ -158,7 +158,7 @@ Eliminates CAS loop retries and atomic bus lock overhead on all 32 worker thread
 When 32 concurrent worker threads update metrics counters (e.g. `messages_processed`, `checksum_accumulator`), placing those variables in adjacent memory addresses causes **False Sharing**:
 
 ```
-❌ False Sharing Bottleneck:
+False Sharing Bottleneck:
 Cache Line (64 Bytes):
 ┌──────────────┬──────────────┬──────────────┬──────────────┐
 │ Worker 0 Ctr │ Worker 1 Ctr │ Worker 2 Ctr │ Worker 3 Ctr │

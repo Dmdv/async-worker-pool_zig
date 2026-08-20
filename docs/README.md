@@ -6,7 +6,7 @@ Engineered specifically for High-Frequency Trading (HFT), market data processing
 
 ---
 
-## ⚡ Core Architecture Pipeline & Workload Specialization
+## Core Architecture Pipeline & Workload Specialization
 
 AWP provides three specialized, complementary architectural primitives designed for distinct stages of an ultra-low-latency HFT pipeline:
 
@@ -29,7 +29,7 @@ AWP provides three specialized, complementary architectural primitives designed 
        └───────────────────────────┘
 ```
 
-### 🧩 Detailed Primitive Specialization & Problem Solving
+### Detailed Primitive Specialization & Problem Solving
 
 #### 1. `BipRing` & `BipBuffer` (Variable-Length Network Ingress)
 * **Role:** High-throughput streaming of arbitrary-length UDP packets, Ethernet frames, and PCAP data (64 bytes to 1500 bytes MTU).
@@ -49,7 +49,7 @@ AWP provides three specialized, complementary architectural primitives designed 
 
 ---
 
-### 🦀 Safe Rust FFI Abstractions (`awp-zig-rs`)
+### Safe Rust FFI Abstractions (`awp-zig-rs`)
 
 All three primitives are fully exposed and memory-safe in Rust:
 1. `awp_zig_rs::BipRing` / `awp_zig_rs::BipBuffer` (with RAII `PacketView` zero-copy lifetime guards)
@@ -58,7 +58,7 @@ All three primitives are fully exposed and memory-safe in Rust:
 
 ---
 
-## 🏛️ Microarchitectural Guarantees
+## Microarchitectural Guarantees
 
 - **Zero-Allocation Hot Path:** Zero `malloc`/`free` calls during streaming.
 - **2MB HugePages & Transparent HugePages:** Dedicated `HftMemorySlab` with `MAP_HUGETLB`, `MADV_HUGEPAGE`, and runtime prefaulting guaranteeing **0 Minor Page Faults**.
@@ -68,7 +68,7 @@ All three primitives are fully exposed and memory-safe in Rust:
 
 ---
 
-## 📦 Documentation Directory
+## Documentation Directory
 
 - [**Getting Started**](getting-started/quickstart.md) — Quickstart guides for Zig and Rust.
 - [**System Architecture**](architecture/overview.md) — Core dataflow and component interaction.

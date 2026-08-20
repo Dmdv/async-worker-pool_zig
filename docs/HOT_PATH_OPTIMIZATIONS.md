@@ -24,7 +24,7 @@ In naive thread pool implementations, messages/frames are allocated from a singl
 * Under high multi-threaded volume, the CPU cache coherence subsystem (MESI/MOESI protocol) spends hundreds of cycles repeatedly invalidating and transferring ownership of `p->head` across core interconnects (Cache Line Bouncing), introducing latency spikes up to $50\text{–}100\text{ µs}$.
 
 ```
-❌ Legacy Contended Global CAS Pool:
+Legacy Contended Global CAS Pool:
 ┌────────────────────────────────────────────────────────────────────────┐
 │               Global Frame Pool (Single atomic `p->head`)              │
 │       ▲            ▲            ▲            ▲            ▲            │
@@ -37,7 +37,7 @@ In naive thread pool implementations, messages/frames are allocated from a singl
 We eliminated the global Treiber CAS stack from the hot path by pre-allocating an **embedded 4KB page-aligned contiguous slab of frames** directly inside each worker ring (`r->frames[capacity]`):
 
 ```
-✅ Optimized Per-Ring Embedded Slabs:
+Optimized Per-Ring Embedded Slabs:
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Worker 0 Ring Buffer                            │
 │  ┌──────────────────────────────────────────────────────────────────┐  │

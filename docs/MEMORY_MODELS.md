@@ -64,7 +64,7 @@ Every memory access that misses L1/L2 cache, crosses a 4KB page boundary, or cro
 Traditional general-purpose dynamic memory allocation (`malloc`, `free`, `new`, `std.heap.GeneralPurposeAllocator`) is fatal to ultra-low-latency deterministic pipelines for five fundamental reasons:
 
 ### 2.1 Non-Deterministic Free-List Traversal Jitter
-General-purpose allocators maintain complex bin structures (small, medium, large bins, red-black trees, or segregated free lists). 
+General-purpose allocators maintain complex bin structures (small, medium, large bins, red-black trees, or segregated free lists).
 * When allocating, `malloc` must search for an appropriately sized chunk, split bins, or coalesce neighboring free blocks.
 * This search time is non-deterministic ($O(K)$ bin search), resulting in latency tail spikes ($p99.9 > 1\text{ ms}$).
 

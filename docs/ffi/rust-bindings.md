@@ -4,7 +4,7 @@ The **`awp-zig-rs`** crate provides idiomatic, memory-safe, and zero-cost Rust a
 
 ---
 
-## 🔒 Memory Safety & Concurrency Contracts
+## Memory Safety & Concurrency Contracts
 
 ### 1. SPSC Isolation: `Send` without `Sync`
 In Single-Producer Single-Consumer queues, allowing multiple threads to call `peek()` or `pop()` concurrently causes data races on internal indices. `awp-zig-rs` strictly enforces:
@@ -38,7 +38,7 @@ impl<'a> Drop for PacketView<'a> {
 
 ---
 
-## 🛠 Complete Rust Streaming Example
+## Complete Rust Streaming Example
 
 ```rust
 use awp_zig_rs::{BipRing, Result};

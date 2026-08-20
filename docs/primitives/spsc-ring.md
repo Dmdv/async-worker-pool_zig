@@ -4,7 +4,7 @@ The Single-Producer Single-Consumer (SPSC) lock-free ring is the core inter-thre
 
 ---
 
-## ⚡ Comptime-Parameterized Generic Ring
+## Comptime-Parameterized Generic Ring
 
 In Zig, `SpscRing(T, capacity)` is parameterized at compile time:
 
@@ -19,7 +19,7 @@ pub fn SpscRing(comptime T: type, comptime capacity: usize) type
 
 ---
 
-## 🛠 Two-Phase Zero-Copy API
+## Two-Phase Zero-Copy API
 
 Rather than copying data into the queue by value, AWP provides a **Two-Phase Claim & Commit** interface:
 
@@ -29,7 +29,7 @@ if (ring.claim()) |slot_ptr| {
     // Write directly into ring memory (Zero-Copy)
     slot_ptr.timestamp_ns = awp.nowNs();
     slot_ptr.bid_price = 10050;
-    
+
     // Commit the slot, publishing it to consumer with Release semantics
     ring.commit();
 }
@@ -45,10 +45,10 @@ if (ring.tryPop()) |item| {
 
 ---
 
-## 📊 Performance Benchmark Comparison
+## Performance Benchmark Comparison
 
 | Data Structure | Payload Size | Throughput | Mean Latency | Hop Period |
 | :--- | :--- | :--- | :--- | :--- |
-| **Pure Pointer Ring** | **8 Bytes** | **171.76 M ops/sec** 🚀 | **5.82 ns** | 5.82 ns |
-| **64-Byte POD Ring** (`BookUpdate64`) | **64 Bytes** | **28.54 M ops/sec** 🚀 | **35.03 ns** | 35.03 ns |
+| **Pure Pointer Ring** | **8 Bytes** | **171.76 M ops/sec** | **5.82 ns** | 5.82 ns |
+| **64-Byte POD Ring** (`BookUpdate64`) | **64 Bytes** | **28.54 M ops/sec** | **35.03 ns** | 35.03 ns |
 | **Legacy 4KB Frame Ring** | **4,096 Bytes** | 62.50 M ops/sec | 16.00 ns | 16.00 ns |

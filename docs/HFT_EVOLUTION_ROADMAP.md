@@ -25,7 +25,7 @@ flowchart TD
     subgraph AsyncOffPath ["Async Off-Path Pipeline (Worker Pool via SPSC 64B Rings)"]
         Reactor --> |"Non-Blocking SPSC (15 ns)"| SpscRing1["64-Byte POD Ring (Book Updates)"]
         Reactor --> |"Non-Blocking SPSC (15 ns)"| SpscRing2["Variable-Length Ring (Raw PCAP / ITCH)"]
-        
+
         SpscRing1 --> Worker1["Worker Core 2: Async Risk Engine"]
         SpscRing1 --> Worker2["Worker Core 3: Historical Data Recorder"]
         SpscRing2 --> Worker3["Worker Core 4: Telemetry & Metrics Exporter"]
@@ -109,7 +109,7 @@ flowchart TD
       ask_qty: f64,        // 8B: Top of Book Ask Quantity
       _reserved: [8]u8 = [_]u8{0} ** 8, // 8B: Padding to exactly 64B (1 Cache Line)
   };
-  
+
   pub fn SpscRing(comptime T: type, comptime capacity: usize) type {
       // Compile-time power-of-two assertions, 64-byte aligned slabs, HugePage backing
   }
