@@ -57,66 +57,95 @@ pub fn pinToPerformanceCores() void {
     }
 }
 
-/// Low-Latency Prefaulted & Page-Aligned Memory Slab
-/// Pre-touches 4KB pages to eliminate runtime Demand-Paging Minor Page Faults
+/// Low-Latency HugePage (2MB) & Prefaulted Memory Slab Allocator
+/// Backed by explicit HugeTLB (MAP_HUGETLB / 2MB pages) or THP (MADV_HUGEPAGE) with 4KB fallback.
+/// Eliminates runtime Demand-Paging Minor Page Faults and minimizes TLB footprint.
 pub const HftMemorySlab = struct {
+    pub const HUGE_PAGE_SIZE: usize = 2 * 1024 * 1024; // 2MB HugePage
+    pub const BASE_PAGE_SIZE: usize = 4096;
+
     ptr: [*]align(64) u8,
     len: usize,
+    is_huge_page: bool,
 
-    /// Strict allocation with mlock verification (returns error if memory cannot be locked)
+    /// Standard allocation: Attempts explicit 2MB HugePages (MAP_HUGETLB) on Linux,
+    /// falling back to transparent hugepage advisory (MADV_HUGEPAGE) and page prefaulting, with verified mlock.
     pub fn allocate(size_bytes: usize) !HftMemorySlab {
-        const page_size = 4096;
-        const aligned_size = std.mem.alignForward(usize, size_bytes, page_size);
-
-        const flags: c_int = c_mman.MAP_PRIVATE | c_mman.MAP_ANON;
-        const raw = c_mman.mmap(null, aligned_size, c_mman.PROT_READ | c_mman.PROT_WRITE, flags, -1, 0);
-        if (raw == c_mman.MAP_FAILED) {
-            return error.OutOfMemory;
-        }
-
-        const ptr: [*]align(64) u8 = @ptrCast(@alignCast(raw));
-
-        // Memory Prefaulting: Write 0 into every 4KB page to eliminate runtime Demand-Paging Minor Page Faults
-        var off: usize = 0;
-        while (off < aligned_size) : (off += page_size) {
-            ptr[off] = 0;
-        }
-
-        // Lock memory to physical RAM to prevent paging/swapping
-        if (c_mman.mlock(raw, aligned_size) != 0) {
-            _ = c_mman.munmap(raw, aligned_size);
-            return error.MlockFailed;
-        }
-
-        return HftMemorySlab{
-            .ptr = ptr,
-            .len = aligned_size,
-        };
+        return allocateInternal(size_bytes, true, false);
     }
 
-    /// Permissive allocation (attempts mlock, succeeds even if RLIMIT_MEMLOCK is restricted in unprivileged containers)
-    pub fn allocatePermissive(size_bytes: usize) !HftMemorySlab {
-        const page_size = 4096;
-        const aligned_size = std.mem.alignForward(usize, size_bytes, page_size);
+    /// Strict HugePage allocation: Fails with error.HugePagesUnavailable if 2MB HugeTLB pages cannot be allocated
+    pub fn allocateStrictHugePages(size_bytes: usize) !HftMemorySlab {
+        return allocateInternal(size_bytes, true, true);
+    }
 
-        const flags: c_int = c_mman.MAP_PRIVATE | c_mman.MAP_ANON;
-        const raw = c_mman.mmap(null, aligned_size, c_mman.PROT_READ | c_mman.PROT_WRITE, flags, -1, 0);
-        if (raw == c_mman.MAP_FAILED) {
-            return error.OutOfMemory;
+    /// Permissive allocation: Best-effort hugepages and mlock (does not fail if mlock is restricted in containers)
+    pub fn allocatePermissive(size_bytes: usize) !HftMemorySlab {
+        return allocateInternal(size_bytes, false, false);
+    }
+
+    fn allocateInternal(size_bytes: usize, strict_mlock: bool, strict_huge: bool) !HftMemorySlab {
+        const is_linux = @import("builtin").os.tag == .linux;
+        var is_huge = false;
+        var raw: ?*anyopaque = null;
+        var final_size: usize = 0;
+
+        // 1. Try explicit 2MB HugePages on Linux (MAP_HUGETLB)
+        if (is_linux and @hasDecl(c_mman, "MAP_HUGETLB")) {
+            final_size = std.mem.alignForward(usize, size_bytes, HUGE_PAGE_SIZE);
+            const flags: c_int = c_mman.MAP_PRIVATE | c_mman.MAP_ANON | c_mman.MAP_HUGETLB;
+            const res = c_mman.mmap(null, final_size, c_mman.PROT_READ | c_mman.PROT_WRITE, flags, -1, 0);
+            if (res != c_mman.MAP_FAILED) {
+                raw = res;
+                is_huge = true;
+            }
         }
 
-        const ptr: [*]align(64) u8 = @ptrCast(@alignCast(raw));
+        // If strict huge pages requested and failed, return error
+        if (strict_huge and raw == null) {
+            return error.HugePagesUnavailable;
+        }
 
+        // 2. Fallback to 4KB page aligned anonymous mapping
+        if (raw == null) {
+            final_size = std.mem.alignForward(usize, size_bytes, BASE_PAGE_SIZE);
+            const flags: c_int = c_mman.MAP_PRIVATE | c_mman.MAP_ANON;
+            const res = c_mman.mmap(null, final_size, c_mman.PROT_READ | c_mman.PROT_WRITE, flags, -1, 0);
+            if (res == c_mman.MAP_FAILED) {
+                return error.OutOfMemory;
+            }
+            raw = res;
+
+            // Advise kernel to use Transparent Huge Pages (MADV_HUGEPAGE / MADV_WILLNEED)
+            if (@hasDecl(c_mman, "MADV_HUGEPAGE")) {
+                _ = c_mman.madvise(raw, final_size, c_mman.MADV_HUGEPAGE);
+            }
+            if (@hasDecl(c_mman, "MADV_WILLNEED")) {
+                _ = c_mman.madvise(raw, final_size, c_mman.MADV_WILLNEED);
+            }
+        }
+
+        const ptr: [*]align(64) u8 = @ptrCast(@alignCast(raw.?));
+
+        // 3. Memory Prefaulting: Touch every page (2MB stride if huge, 4KB stride if base) to eliminate runtime page faults
+        const stride = if (is_huge) HUGE_PAGE_SIZE else BASE_PAGE_SIZE;
         var off: usize = 0;
-        while (off < aligned_size) : (off += page_size) {
+        while (off < final_size) : (off += stride) {
             ptr[off] = 0;
         }
 
-        _ = c_mman.mlock(raw, aligned_size);
+        // 4. Memory Locking (mlock)
+        if (c_mman.mlock(raw.?, final_size) != 0) {
+            if (strict_mlock) {
+                _ = c_mman.munmap(raw.?, final_size);
+                return error.MlockFailed;
+            }
+        }
 
         return HftMemorySlab{
             .ptr = ptr,
-            .len = aligned_size,
+            .len = final_size,
+            .is_huge_page = is_huge,
         };
     }
 
@@ -470,4 +499,9 @@ test "HftMemorySlab allocation prefaulting and deallocation" {
     slab.ptr[slab.len - 1] = 0x55;
     try std.testing.expectEqual(@as(u8, 0xAA), slab.ptr[0]);
     try std.testing.expectEqual(@as(u8, 0x55), slab.ptr[slab.len - 1]);
+
+    // Test permissive mode
+    var slab_perm = try HftMemorySlab.allocatePermissive(32 * 1024);
+    defer slab_perm.deallocate();
+    try std.testing.expect(slab_perm.len >= 32 * 1024);
 }
