@@ -30,8 +30,9 @@ Executed on Apple Silicon Performance Cores (Darwin arm64):
 | **`awp-rs`** | Rust | Safe FFI Zero-Copy | **0.50 M msg/sec** | **10.80 µs** | RAII `ClaimGuard` over `libawp.a` |
 
 Full benchmark reports and documentation:
-- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
-- [`docs/ALLOCATORS_REVIEW.md`](docs/ALLOCATORS_REVIEW.md)
+- [`docs/MEMORY_MODELS.md`](docs/MEMORY_MODELS.md) — Comprehensive low-latency memory models & cache architecture
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — Benchmark reports & latency histograms
+- [`docs/ALLOCATORS_REVIEW.md`](docs/ALLOCATORS_REVIEW.md) — Detailed Zig 0.16 allocator analysis
 
 ---
 
