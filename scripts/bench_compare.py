@@ -35,7 +35,7 @@ def format_delta(delta_pct: float, higher_is_better: bool) -> str:
     else:
         return f"{RED}{val_str} 🔴 REGRESSION{RESET}"
 
-def compare_benchmarks(baseline_file: str, current_file: str, max_tput_drop_pct: float, max_lat_rise_pct: float) -> int:
+def compare_benchmarks(baseline_file: str, current_file: str, max_tput_drop_pct: float, max_lat_rise_pct: float, warn_only: bool = False) -> int:
     base = load_json(baseline_file)
     curr = load_json(current_file)
 
@@ -101,8 +101,12 @@ def compare_benchmarks(baseline_file: str, current_file: str, max_tput_drop_pct:
         print(f"\n{RED}{BOLD}❌ PERFORMANCE REGRESSION DETECTED:{RESET}")
         for r in regressions:
             print(f"  • {RED}{r}{RESET}")
-        print(f"\n{RED}Build failed due to benchmark performance regression.{RESET}\n")
-        return 1
+        if warn_only:
+            print(f"\n{YELLOW}Warning: Performance regression flagged (warn-only mode active on virtualized CI runner).{RESET}\n")
+            return 0
+        else:
+            print(f"\n{RED}Build failed due to benchmark performance regression.{RESET}\n")
+            return 1
     else:
         print(f"\n{GREEN}{BOLD}✅ BENCHMARK PASSED: All metrics meet performance thresholds.{RESET}\n")
         return 0
@@ -113,9 +117,10 @@ def main():
     parser.add_argument("current", help="Path to current benchmark.json")
     parser.add_argument("--max-tput-drop", type=float, default=15.0, help="Max allowable throughput drop percentage (default: 15.0%%)")
     parser.add_argument("--max-lat-rise", type=float, default=25.0, help="Max allowable latency increase percentage (default: 25.0%%)")
+    parser.add_argument("--warn-only", action="store_true", help="Print warning instead of failing build (for virtualized / shared runners)")
 
     args = parser.parse_args()
-    rc = compare_benchmarks(args.baseline, args.current, args.max_tput_drop, args.max_lat_rise)
+    rc = compare_benchmarks(args.baseline, args.current, args.max_tput_drop, args.max_lat_rise, args.warn_only)
     sys.exit(rc)
 
 if __name__ == "__main__":

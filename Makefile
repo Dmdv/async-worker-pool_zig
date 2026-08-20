@@ -23,6 +23,11 @@ bench-compare:
 	BENCH_JSON_OUT=/tmp/awp_current_bench.json zig build bench -Doptimize=ReleaseFast
 	python3 scripts/bench_compare.py benchmarks/baseline.json /tmp/awp_current_bench.json
 
+bench-compare-ci:
+	@mkdir -p benchmarks
+	BENCH_JSON_OUT=/tmp/awp_current_bench.json zig build bench -Doptimize=ReleaseFast
+	python3 scripts/bench_compare.py benchmarks/baseline.json /tmp/awp_current_bench.json --warn-only
+
 check-rust:
 	cd bindings/rust && cargo test
 

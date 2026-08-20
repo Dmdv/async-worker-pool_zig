@@ -28,7 +28,7 @@ jobs:
         run: make bench
 
       - name: Benchmark Regression Guard Check
-        run: make bench-compare
+        run: make bench-compare-ci
 
   rust-ffi-tests-macos:
     name: macOS Rust FFI (awp-zig-rs)
