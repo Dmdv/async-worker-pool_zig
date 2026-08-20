@@ -592,6 +592,10 @@ pub fn LockFreeRing(comptime capacity: usize) type {
             }
         }
 
+        /// Pop a frame from the ring.
+        /// NOTE: tryPop releases the cell sequence immediately upon returning the pointer.
+        /// For concurrent zero-copy pipelines where processing must precede slot release,
+        /// prefer `processOne` to guarantee producer cannot overwrite payload during consumer handling.
         pub inline fn tryPop(self: *Self) ?*Frame {
             const pos = self.dequeue_pos.load(.monotonic);
             const cell = &self.cells[pos & mask];

@@ -2,7 +2,7 @@
 # Git pre-push hook: Prevent direct pushes to master / main
 
 while read -r local_ref local_sha remote_ref remote_sha; do
-    if [[ "$remote_ref" =~ /master$ ]] || [[ "$remote_ref" =~ /main$ ]]; then
+    if [[ "$remote_ref" == "refs/heads/master" || "$remote_ref" == "refs/heads/main" ]]; then
         echo "❌ [BLOCKED] Direct pushes to '$remote_ref' are prohibited by repository policy." >&2
         echo "👉 Please push your changes to a feature branch and open a Pull Request:" >&2
         echo "   git checkout -b feat/your-feature" >&2

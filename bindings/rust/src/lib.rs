@@ -512,6 +512,9 @@ pub struct TradingReactor<'a> {
     offpath: Option<&'a mut OffPathPipeline>,
 }
 
+/// Safety: TradingReactor owns its underlying C pointer uniquely and is strictly `!Sync`.
+/// Moving across threads is safe before starting the execution loop, but in production
+/// HFT pipelines it is designed to be initialized and executed on a dedicated pinned P-Core thread.
 unsafe impl<'a> Send for TradingReactor<'a> {}
 
 impl<'a> TradingReactor<'a> {
