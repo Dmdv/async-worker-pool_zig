@@ -4,7 +4,7 @@ AWP includes a multi-threaded async worker pool designed for parallel task execu
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 ```
 [ Ingress Dispatcher ]
@@ -19,7 +19,7 @@ Each worker owns an isolated lock-free ring buffer, eliminating lock contention 
 
 ---
 
-## ⚡ Native SIMD Acceleration
+## Native SIMD Acceleration
 
 AWP leverages Zig's first-class `@Vector` primitives for hardware-accelerated payload validation and checksum calculation:
 
@@ -50,11 +50,11 @@ This compiles directly into single-cycle SIMD vector instructions:
 
 ---
 
-## 📊 Worker Pool Benchmark Performance
+## Worker Pool Benchmark Performance
 
 | Metric | Result (4 P-Cores, Darwin arm64) |
 | :--- | :--- |
-| **Throughput** | **`5.38 Million tasks/sec`** 🚀 |
+| **Throughput** | **`5.38 Million tasks/sec`** |
 | **Mean Latency** | **`547.0 ns`** (`0.55 µs`) |
 | **p50 (Median)** | **`< 100 ns`** |
 | **p90 Latency** | **`1.00 µs`** |

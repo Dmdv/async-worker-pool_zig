@@ -4,7 +4,7 @@ Reliable benchmarking in Low-Latency HFT systems requires strict microarchitectu
 
 ---
 
-## 🔬 Benchmarking Methodology
+## Benchmarking Methodology
 
 All benchmarks in AWP adhere to the following principles:
 
@@ -15,24 +15,24 @@ All benchmarks in AWP adhere to the following principles:
 
 ---
 
-## 📊 Comprehensive Performance Results
+## Comprehensive Performance Results
 
 ```
 =========================================================================================================================================
-                 AWP HISTORICAL BENCHMARK EVOLUTION TIMELINE                            
+                 AWP HISTORICAL BENCHMARK EVOLUTION TIMELINE
 =========================================================================================================================================
-Milestone / Phase              | Commit   | Pool Throughput | Pool Mean    | p99 Latency  | Pure SPSC     | 64B POD Ring  | BipRing      
+Milestone / Phase              | Commit   | Pool Throughput | Pool Mean    | p99 Latency  | Pure SPSC     | 64B POD Ring  | BipRing
 -----------------------------------------------------------------------------------------------------------------------------------------
-Phase 0: Initial Zig Port      | e228513  | 5.33 M/s        | 2330.7 ns    | 102.00 µs    | 98.1 M/s      | N/A           | N/A          
-Phase 1: Hardware Hardening    | 249e3f2  | 5.38 M/s        | 547.0 ns     | 1.00 µs      | 171.8 M/s     | N/A           | N/A          
-Phase 2: Generic 64B POD Ring  | 14f7510  | 6.43 M/s        | 629.8 ns     | 4.00 µs      | 94.4 M/s      | 21.7 M/s      | N/A          
-Phase 3: Variable-Length BipRing | 1c23c78  | 6.03 M/s      | 506.0 ns     | 1.00 µs      | 176.4 M/s     | 19.4 M/s      | 9.4 M/s      
+Phase 0: Initial Zig Port      | e228513  | 5.33 M/s        | 2330.7 ns    | 102.00 µs    | 98.1 M/s      | N/A           | N/A
+Phase 1: Hardware Hardening    | 249e3f2  | 5.38 M/s        | 547.0 ns     | 1.00 µs      | 171.8 M/s     | N/A           | N/A
+Phase 2: Generic 64B POD Ring  | 14f7510  | 6.43 M/s        | 629.8 ns     | 4.00 µs      | 94.4 M/s      | 21.7 M/s      | N/A
+Phase 3: Variable-Length BipRing | 1c23c78  | 6.03 M/s      | 506.0 ns     | 1.00 µs      | 176.4 M/s     | 19.4 M/s      | 9.4 M/s
 =========================================================================================================================================
 ```
 
 ---
 
-## 🛡️ Automated Regression Guard (`scripts/bench_compare.py`)
+## Automated Regression Guard (`scripts/bench_compare.py`)
 
 AWP integrates an automated CI benchmark regression guard:
 - **Baseline Tracking:** Compares current build metrics against `benchmarks/baseline.json`.

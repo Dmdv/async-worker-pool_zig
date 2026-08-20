@@ -40,5 +40,8 @@ docs:
 docs-serve:
 	mdbook serve --open
 
+wiki-sync:
+	./scripts/publish_wiki.sh
+
 clean:
 	rm -rf .zig-cache zig-cache zig-out bindings/rust/target book /tmp/awp_current_bench.json

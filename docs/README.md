@@ -6,47 +6,59 @@ Engineered specifically for High-Frequency Trading (HFT), market data processing
 
 ---
 
-## ⚡ Core Performance Pillars
+## Core Architecture Pipeline & Workload Specialization
 
-AWP provides three specialized, complementary architectural primitives designed for distinct layers of the HFT pipeline:
+AWP provides three specialized, complementary architectural primitives designed for distinct stages of an ultra-low-latency HFT pipeline:
 
 ```
-[ NIC / Kernel-Bypass UDP Ingress ]
-                │
-                ▼  (Variable-Length Network Frames 64B–1500B MTU)
-        ┌──────────────┐
-        │ 1. BipRing   │  ➔ Zero-Copy Bipartite Buffer (~8.52 GB/s Bandwidth)
-        └──────┬───────┘
-               │ (ITCH / SBE / FAST Protocol Parsing)
-               ▼
-        ┌───────────────────────────┐
-        │ 2. SpscRing(BookUpdate64) │  ➔ 64-Byte Cacheline POD Ring (35 ns Hop Latency)
-        └──────┬────────────────────┘
-               │ (Matching Engine & Signal Execution)
-               ▼
-        ┌───────────────────────────┐
-        │ 3. Multi-Threaded Pool    │  ➔ Pinned Worker Pool + SIMD Vectorization
-        └───────────────────────────┘
+[ NIC / Kernel-Bypass UDP Feed ]
+               │
+               ▼  (Variable-Length Raw Network Packets: 64B – 1500B MTU)
+       ┌──────────────┐
+       │ 1. BipRing   │  ➔ Zero-Copy Bipartite Buffer (No wrap split, ~8.52 GB/s Bandwidth)
+       └──────┬───────┘
+              │ (Exchange Protocol Parser: ITCH / SBE / FAST)
+              ▼
+       ┌───────────────────────────┐
+       │ 2. SpscRing(BookUpdate64) │  ➔ 64-Byte Cacheline POD Ring (35.03 ns Single-Hop Latency)
+       └──────┬────────────────────┘
+              │ (Matching Engine & Signal Generation)
+              ▼
+       ┌───────────────────────────┐
+       │ 3. Multi-Threaded Pool    │  ➔ Pinned Worker Pool for Risk Controls, FIX Logging & SIMD
+       └───────────────────────────┘
 ```
 
-1. **Network Packet Ingress (`BipRing` & `BipBuffer`):**
-   - Lock-free Simon Cooke Bipartite Buffer coupled with a 16-byte `PacketDescriptor` SPSC ring.
-   - Streams arbitrary packet sizes (64B to 1500B MTU) with **0 memory fragmentation** and **0 split-wrap reassembly `memcpy`**.
-   - Achieves **`14.21 Million packets/sec`** at **`70.38 ns`** transit latency (**`8.52 GB/s`** effective data throughput).
+### Detailed Primitive Specialization & Problem Solving
 
-2. **Market Data Streaming (`SpscRing<T>` & `BookUpdate64`):**
-   - Cacheline-dense 64-byte POD market data structures (`BookUpdate64`, `Trade64`).
-   - Slashes memory bus traffic by **98.5%** compared to naive frame allocations, achieving **`28.54 Million ops/sec`** at **`35.03 ns`** single-hop latency.
-   - Pure pointer SPSC transfers achieve **`171.76 Million ops/sec`** at **`5.82 ns`** single-hop latency.
+#### 1. `BipRing` & `BipBuffer` (Variable-Length Network Ingress)
+* **Role:** High-throughput streaming of arbitrary-length UDP packets, Ethernet frames, and PCAP data (64 bytes to 1500 bytes MTU).
+* **The Problem:** Standard circular ring buffers split packets that cross the end-of-buffer boundary into two disjoint slices, forcing the consumer to allocate temporary memory and perform a copy (`memcpy`) to reconstruct the packet. Naive fixed-slot queues allocate 4KB per slot, wasting 98% of buffer capacity on 64-byte packets.
+* **The AWP Solution:** Simon Cooke's lock-free bipartite buffer manages two dynamic contiguous regions (Region A and Region B) coupled with a 16-byte `PacketDescriptor` SPSC ring, guaranteeing **100% contiguous zero-copy virtual slices** at **14.21 Million pkts/sec** (70.38 ns transit latency, **~8.52 GB/s** data throughput).
 
-3. **Multi-Threaded Worker Pool & SIMD Dispatch:**
-   - Sharded lock-free work distribution across Apple Silicon P-cores / Linux NUMA cores.
-   - Hardware-accelerated payload validation using `@Vector(16, u8)` and `@reduce(.Add, ...)`.
-   - Delivers **`5.38 Million tasks/sec`** at **`547.0 ns`** mean latency and **`1.00 µs`** p99 tail jitter.
+#### 2. `SpscRing(T, capacity)` (Core-to-Core Market Data Transport)
+* **Role:** Nanosecond-grade transmission of typed market data events and order book updates between CPU cores.
+* **Specializations:**
+  - **`SpscRing(*Task)` (8-Byte Pointers):** Pure pointer dispatch achieving **171.76 Million ops/sec** at **5.82 ns** hop latency.
+  - **`SpscRing(BookUpdate64)` (64-Byte Cacheline POD):** Order book quotes and trade prints (`align(64)`) achieving **28.54 Million ops/sec** at **35.03 ns** hop latency.
+* **The AWP Solution:** Zero runtime allocations, strict 64-byte cacheline isolation eliminating False Sharing, 2MB HugePage slab backing, and 0 CAS atomic acquire-release ordering.
+
+#### 3. `WorkerPool` / `DynamicPool` (Multi-Threaded Execution & SIMD)
+* **Role:** Asynchronous parallel task execution for background analytics, risk monitoring, FIX persistence, and vectorized batch math.
+* **The AWP Solution:** Sharded lock-free rings across worker threads pinned to Apple Silicon P-cores / Linux NUMA cores, SIMD-accelerated payload validation (`fastSum64` via ARM NEON / AVX-512), and $O(1)$ memory teardown via `std.heap.ArenaAllocator`.
 
 ---
 
-## 🏛️ Microarchitectural Guarantees
+### Safe Rust FFI Abstractions (`awp-zig-rs`)
+
+All three primitives are fully exposed and memory-safe in Rust:
+1. `awp_zig_rs::BipRing` / `awp_zig_rs::BipBuffer` (with RAII `PacketView` zero-copy lifetime guards)
+2. `awp_zig_rs::Spsc64Ring` / `BookUpdate64` / `Trade64`
+3. `awp_zig_rs::WorkerPool`
+
+---
+
+## Microarchitectural Guarantees
 
 - **Zero-Allocation Hot Path:** Zero `malloc`/`free` calls during streaming.
 - **2MB HugePages & Transparent HugePages:** Dedicated `HftMemorySlab` with `MAP_HUGETLB`, `MADV_HUGEPAGE`, and runtime prefaulting guaranteeing **0 Minor Page Faults**.
@@ -56,7 +68,7 @@ AWP provides three specialized, complementary architectural primitives designed 
 
 ---
 
-## 📦 Documentation Directory
+## Documentation Directory
 
 - [**Getting Started**](getting-started/quickstart.md) — Quickstart guides for Zig and Rust.
 - [**System Architecture**](architecture/overview.md) — Core dataflow and component interaction.

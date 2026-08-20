@@ -6,7 +6,7 @@ AWP implements **Simon Cooke's Lock-Free Bipartite Buffer (`BipBuffer`)** and co
 
 ---
 
-## 🔄 Bipartite Memory Wrapping Mechanics
+## Bipartite Memory Wrapping Mechanics
 
 The buffer alternates dynamically between **Region A** (tail of buffer) and **Region B** (head of buffer):
 
@@ -32,7 +32,7 @@ read_a = 0                                       write_a = 1912
 
 ---
 
-## 🚀 `BipRing`: Coupling BipBuffer with Descriptors
+## `BipRing`: Coupling BipBuffer with Descriptors
 
 While `BipBuffer` handles raw byte allocations, **`BipRing(buffer_capacity, descriptor_capacity)`** couples it with a lock-free 16-byte `PacketDescriptor` SPSC ring:
 
@@ -54,7 +54,7 @@ const success = bip_ring.pushPacket(udp_payload, awp.nowNs());
 if (bip_ring.popPacket()) |pkt| {
     // 1. Process payload in-place (contiguous Zero-Copy view)
     processEthernetFrame(pkt.payload);
-    
+
     // 2. Safely release slot for writer reuse
     bip_ring.releasePacket(pkt.desc);
 }
@@ -62,7 +62,7 @@ if (bip_ring.popPacket()) |pkt| {
 
 ---
 
-## 🦀 Rust RAII Zero-Copy Safety (`PacketView`)
+## Rust RAII Zero-Copy Safety (`PacketView`)
 
 In Rust, `awp_zig_rs::PacketView<'a>` borrows `&'a mut BipRing`. When the view goes out of scope, its `Drop` implementation automatically notifies the C ABI to release the buffer region:
 

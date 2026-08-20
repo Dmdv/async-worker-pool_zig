@@ -4,7 +4,7 @@ AWP exports a zero-overhead, C11-compatible Foreign Function Interface (FFI). Al
 
 ---
 
-## 📋 Standard Error Return Codes
+## Standard Error Return Codes
 
 | Code | POSIX Equivalent | Description |
 | :--- | :--- | :--- |
@@ -15,7 +15,7 @@ AWP exports a zero-overhead, C11-compatible Foreign Function Interface (FFI). Al
 
 ---
 
-## 🛠 Exported C ABI Functions
+## Exported C ABI Functions
 
 ### 1. Multi-Threaded Worker Pool (`awp_zig_pool_*`)
 ```c

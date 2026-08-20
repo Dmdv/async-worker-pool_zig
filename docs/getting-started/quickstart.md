@@ -4,7 +4,7 @@ This guide walks you through setting up and using **AWP** in both native **Zig**
 
 ---
 
-## 🛠 Prerequisites
+## Prerequisites
 
 - **Zig:** `0.14.0` or `0.16.0+` (compatible across modern Zig releases)
 - **Rust:** `1.75.0+` (for `bindings/rust`)

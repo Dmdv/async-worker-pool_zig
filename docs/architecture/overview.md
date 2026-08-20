@@ -4,7 +4,7 @@ AWP is engineered around the principle of **Zero-Copy Mechanical Sympathy**. Eve
 
 ---
 
-## 🏛 High-Level Architecture
+## High-Level Architecture
 
 The AWP pipeline decouples network ingestion, protocol parsing, and order execution across dedicated CPU cores:
 
@@ -35,7 +35,7 @@ graph TD
 
 ---
 
-## 🧩 Architectural Layers
+## Architectural Layers
 
 ### 1. Ingestion Layer: Bipartite Memory Streaming (`BipRing`)
 - **Problem:** Standard circular queues fragment variable-length packets across the buffer boundary, necessitating an expensive reassembly `memcpy` or oversized slot allocations.
@@ -54,7 +54,7 @@ graph TD
 
 ---
 
-## ⚡ Thread Pinning & Core Isolation
+## Thread Pinning & Core Isolation
 
 AWP includes native hardware affinity bindings:
 - **Apple Silicon (Darwin arm64):** Pins threads to Performance Cores (P-cores) using `QOS_CLASS_USER_INTERACTIVE` and Mach `THREAD_AFFINITY_POLICY`.

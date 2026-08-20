@@ -38,9 +38,9 @@ Designed for low-overhead inter-thread job distribution and SIMD task execution 
 
 | Engine / Primitive | Language | Payload | Throughput | p50 (Median) | p99 Tail | Mean Latency | Bandwidth |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Pure Pointer SPSC Ring** | Zig 0.16 | **8 B** (Ptr) | **171.76 M ops/s** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** | ~1.37 GB/s |
-| **Multi-Threaded Async Pool** (4 P-Cores) | Zig 0.16 | **Task Frame** | **5.38 M msg/s** 🚀 | **< 100 ns** | **1.00 µs** | **547.0 ns** | — |
-| **`awp-zig-rs` FFI Pool** ([`bindings/rust`](bindings/rust)) | Rust / Zig | **Task Frame** | **5.45 M msg/s** 🚀 | **< 150 ns** | **3.80 µs** | **920.0 ns** | — |
+| **Pure Pointer SPSC Ring** | Zig 0.16 | **8 B** (Ptr) | **171.76 M ops/s** | **< 6 ns** | **< 8 ns** | **5.82 ns** | ~1.37 GB/s |
+| **Multi-Threaded Async Pool** (4 P-Cores) | Zig 0.16 | **Task Frame** | **5.38 M msg/s** | **< 100 ns** | **1.00 µs** | **547.0 ns** | — |
+| **`awp-zig-rs` FFI Pool** ([`bindings/rust`](bindings/rust)) | Rust / Zig | **Task Frame** | **5.45 M msg/s** | **< 150 ns** | **3.80 µs** | **920.0 ns** | — |
 | `async-worker-pool` (C11 Core) | C11 | Task Frame | 0.52 M msg/s | 3.46 µs | 1.11 ms | 2.11 µs | — |
 | `awp-rs` (Rust on C11) | Rust / C11 | Task Frame | 0.53 M msg/s | 3.35 µs | 1.15 ms | 1.87 µs | — |
 
@@ -51,7 +51,7 @@ Optimized for ultra-dense, zero-padding L2/L3 order book updates (`BookUpdate64`
 
 | Engine / Primitive | Language | Payload | Throughput | p50 (Median) | p99 Tail | Mean Latency | Bandwidth |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **64B POD Cacheline Ring** | Zig 0.16 | **64 B** | **28.54 M ops/s** 🚀 | **< 30 ns** | **< 45 ns** | **35.03 ns** | **~1.82 GB/s** |
+| **64B POD Cacheline Ring** | Zig 0.16 | **64 B** | **28.54 M ops/s** | **< 30 ns** | **< 45 ns** | **35.03 ns** | **~1.82 GB/s** |
 | `async-worker-pool` (4KB Raw SPSC) | C11 | 4,096 B | 62.50 M ops/s | < 16 ns | < 20 ns | 16.00 ns | 256 GB/s (98.5% waste) |
 
 ---
@@ -61,20 +61,20 @@ Lock-free Simon Cooke Bipartite Buffer with 16-byte `PacketDescriptor` SPSC ring
 
 | Engine / Primitive | Language | Payload Range | Throughput | p50 (Median) | p99 Tail | Mean Latency | Effective Bandwidth |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Variable-Length BipRing** | Zig 0.16 | **64 B – 1,400 B** | **14.21 M pkts/s** 🚀 | **< 50 ns** | **< 80 ns** | **70.38 ns** | **~8.52 GB/s** 🚀 |
-| **`awp-zig-rs` RAII BipRing** | Rust / Zig | **64 B – 1,400 B** | **13.80 M pkts/s** 🚀 | **< 55 ns** | **< 85 ns** | **72.46 ns** | **~8.28 GB/s** 🚀 |
+| **Variable-Length BipRing** | Zig 0.16 | **64 B – 1,400 B** | **14.21 M pkts/s** | **< 50 ns** | **< 80 ns** | **70.38 ns** | **~8.52 GB/s** |
+| **`awp-zig-rs` RAII BipRing** | Rust / Zig | **64 B – 1,400 B** | **13.80 M pkts/s** | **< 55 ns** | **< 85 ns** | **72.46 ns** | **~8.28 GB/s** |
 
 ### Detailed Tail Latencies Breakdown (1,000,000 Messages)
 
 | Percentile | **Zig 0.16 Engine (Phase 1 Final)** | **C11 Engine** (`async-worker-pool`) | Delta / Notes |
 | :--- | :--- | :--- | :--- |
 | **Min (Observed Floor)** | **15 ns** (0.015 µs) | **83 ns** (0.083 µs) | Observed Single-Hop Floor |
-| **p50 (Median)** | **< 100 ns** | **3.46 µs** (3,458 ns) | **Zig is > 34x lower latency** 🚀 |
-| **p90** | **1.00 µs** (1,000 ns) | **11.17 µs** (11,167 ns) | **Zig is 11.2x lower latency** 🚀 |
-| **p99 (Tail)** | **1.00 µs** (1,000 ns) | **1.11 ms** (1,110,000 ns) | **Zig is 1,110x lower tail jitter** 🚀 |
-| **p99.9** | **96.0 µs** (96,000 ns) | **1.27 ms** (1,270,000 ns) | **Zig is 13.2x lower tail jitter** 🚀 |
-| **Max** | **128.0 µs** (128,000 ns) | **1.67 ms** (1,670,000 ns) | **Zig is 13.0x lower peak jitter** 🚀 |
-| **Pure SPSC Throughput** | **171.76 Million ops/sec** | **62.50 Million ops/sec** | **Zig is 2.75x faster (5.82 ns/op)** 🚀 |
+| **p50 (Median)** | **< 100 ns** | **3.46 µs** (3,458 ns) | **Zig is > 34x lower latency** |
+| **p90** | **1.00 µs** (1,000 ns) | **11.17 µs** (11,167 ns) | **Zig is 11.2x lower latency** |
+| **p99 (Tail)** | **1.00 µs** (1,000 ns) | **1.11 ms** (1,110,000 ns) | **Zig is 1,110x lower tail jitter** |
+| **p99.9** | **96.0 µs** (96,000 ns) | **1.27 ms** (1,270,000 ns) | **Zig is 13.2x lower tail jitter** |
+| **Max** | **128.0 µs** (128,000 ns) | **1.67 ms** (1,670,000 ns) | **Zig is 13.0x lower peak jitter** |
+| **Pure SPSC Throughput** | **171.76 Million ops/sec** | **62.50 Million ops/sec** | **Zig is 2.75x faster (5.82 ns/op)** |
 
 <p align="center">
   <img src="docs/images/benchmark_throughput.png" width="48%" alt="Throughput Comparison" />

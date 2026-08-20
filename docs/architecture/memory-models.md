@@ -4,12 +4,12 @@ High-Frequency Trading architectures require strict alignment with modern CPU me
 
 ---
 
-## 🛑 The False Sharing Problem
+## The False Sharing Problem
 
 In multi-threaded architectures, when two CPU cores read and write variables situated on the **same 64-byte cache line**, the CPU cache coherency protocol (MESI / MOESI) triggers constant cache-line invalidation cycles. This phenomenon—**False Sharing**—degrades performance by up to 10–20x.
 
 ```
-❌ UNPADDED QUEUE (Severe Cacheline Bouncing):
+UNPADDED QUEUE (Severe Cacheline Bouncing):
 ┌──────────────────────────────────────────────────────────────┐
 │ Core 0 (Producer): write_idx  │  Core 1 (Consumer): read_idx │  <-- 64 Bytes (Shared Line)
 └──────────────────────────────────────────────────────────────┘
@@ -18,7 +18,7 @@ In multi-threaded architectures, when two CPU cores read and write variables sit
 ```
 
 ```
-✅ AWP CACHELINE ISOLATION (Zero False Sharing):
+AWP CACHELINE ISOLATION (Zero False Sharing):
 ┌──────────────────────────────────────────────────────────────┐
 │ Cache Line 0 (align(64)): write_offset, write_a, cached_read │  <-- Exclusively owned by Core 0
 ├──────────────────────────────────────────────────────────────┤
@@ -28,7 +28,7 @@ In multi-threaded architectures, when two CPU cores read and write variables sit
 
 ---
 
-## 🔒 Memory Ordering Semantics
+## Memory Ordering Semantics
 
 AWP relies on standard **Acquire-Release** synchronization semantics, completely eliminating costly Compare-And-Swap (`cmpxchg`) loops and memory barriers (`mfence`):
 
@@ -41,7 +41,7 @@ AWP relies on standard **Acquire-Release** synchronization semantics, completely
 
 ---
 
-## 📐 Memory Alignment of Core Structures
+## Memory Alignment of Core Structures
 
 ### `PacketDescriptor` (16 Bytes, Aligned to 16)
 ```zig
