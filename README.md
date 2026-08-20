@@ -19,6 +19,7 @@ Engineered for High-Frequency Trading (HFT), real-time market data streaming, an
 
 - **Multi-Tiered Memory Architecture:** `std.heap.ArenaAllocator` for $O(1)$ pool lifecycle teardown + pre-allocated embedded ring slabs for zero-allocation hot paths. See [`docs/ALLOCATORS_REVIEW.md`](docs/ALLOCATORS_REVIEW.md).
 - **Phase 1 Hardware Hardening & HugePages:** 2MB HugePages (`MAP_HUGETLB`), Transparent HugePages (`MADV_HUGEPAGE`), startup prefaulting (0 Minor Page Faults), and verified `mlock`. See [`docs/PHASE1_HARDWARE_SPECIFICATION.md`](docs/PHASE1_HARDWARE_SPECIFICATION.md).
+- **Phase 2 Generic 64-Byte POD Cacheline SPSC Ring:** `comptime SpscRing(T, capacity)` specialized for 64-byte market data structures (`BookUpdate64`, `Trade64`), slashing memory bandwidth by **98.5%** (64 MB/s vs 4.26 GB/s) and achieving **28.54 M ops/sec** at **35.03 ns** hop latency.
 - **Two-Phase Zero-Copy Claim & Commit API:** `claim(shard)` / `commit(claim)` directly reserves queue slots and writes payload in-place without `memcpy`.
 - **Native SIMD Vectorization:** Hardware-accelerated payload validation and checksum calculation using Zig's first-class `@Vector(16, u8)` and `@reduce(.Add, ...)` primitives (auto-vectorized to ARM NEON / AVX-512).
 - **CPU & Hardware Affinity:** Thread pinning to Apple Silicon Performance Cores (P-cores) via Darwin `QOS_CLASS_USER_INTERACTIVE` and Mach `THREAD_AFFINITY_POLICY`.
@@ -35,6 +36,7 @@ Executed on Apple Silicon Performance Cores (Darwin arm64):
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (4 Pinned Workers) | **5.38 M msg/sec** 🚀 | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
 | **`async-worker-pool_zig`** | Zig 0.16 | Pure Pointer SPSC Ring (0 CAS) | **171.76 M ops/sec** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** |
+| **`async-worker-pool_zig`** (Phase 2) | Zig 0.16 | 64-Byte POD Cacheline Ring (`BookUpdate64`) | **28.54 M ops/sec** 🚀 | **< 30 ns** | **< 45 ns** | **35.03 ns** |
 | **`awp-zig-rs`** ([`bindings/rust`](bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **5.45 M msg/sec** 🚀 | **< 150 ns** | **3.80 µs** (3,800 ns) | **920.0 ns** (0.92 µs) |
 | **[`async-worker-pool`](https://github.com/Dmdv/async-worker-pool)** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3.46 µs** (3,458 ns) | **1.11 ms** (1,110,000 ns) | **2.11 µs** (2,109 ns) |
 | **[`async-worker-pool`](https://github.com/Dmdv/async-worker-pool)** | C11 | Raw SPSC Ring | **62.50 M ops/sec** | **< 16 ns** | **< 20 ns** | **16.00 ns** |
@@ -61,9 +63,12 @@ Executed on Apple Silicon Performance Cores (Darwin arm64):
 </p>
 
 Full benchmark reports and documentation:
-- [`docs/EVOLUTION_PLAN.md`](docs/EVOLUTION_PLAN.md) — Complete microarchitectural theory, optimizations & roadmap
-- [`docs/HOT_PATH_OPTIMIZATIONS.md`](docs/HOT_PATH_OPTIMIZATIONS.md) — Deep technical breakdown of all 6 hot-path optimizations
-- [`docs/MEMORY_MODELS.md`](docs/MEMORY_MODELS.md) — Comprehensive low-latency memory models & cache architecture
+- [`CHANGELOG.md`](CHANGELOG.md) — Complete release notes, architectural milestones & hardware benchmark history
+- [`docs/HFT_EVOLUTION_ROADMAP.md`](docs/HFT_EVOLUTION_ROADMAP.md) — 5-Phase HFT evolution roadmap & implementation status
+- [`docs/PHASE1_HARDWARE_SPECIFICATION.md`](docs/PHASE1_HARDWARE_SPECIFICATION.md) — Phase 1 Hardware Hardening & Zero-TLB Memory Subsystem Specification
+- [`docs/EVOLUTION_PLAN.md`](docs/EVOLUTION_PLAN.md) — Microarchitectural theory & memory layout models
+- [`docs/HOT_PATH_OPTIMIZATIONS.md`](docs/HOT_PATH_OPTIMIZATIONS.md) — Technical breakdown of hot-path optimizations
+- [`docs/MEMORY_MODELS.md`](docs/MEMORY_MODELS.md) — Low-latency memory models & cache architecture
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — Benchmark reports & latency histograms
 - [`docs/ALLOCATORS_REVIEW.md`](docs/ALLOCATORS_REVIEW.md) — Detailed Zig 0.16 allocator analysis
 

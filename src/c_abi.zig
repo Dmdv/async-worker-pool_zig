@@ -18,7 +18,7 @@ pub const DynamicRing = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !DynamicRing {
-        std.debug.assert(std.math.isPowerOfTwo(capacity));
+        if (!std.math.isPowerOfTwo(capacity) or capacity < 2) return error.InvalidCapacity;
         const cells = try allocator.alloc(Cell, capacity);
         const frames = try allocator.alloc(Frame, capacity);
         for (cells, 0..) |*cell, i| {
@@ -216,6 +216,7 @@ export fn awp_zig_pool_create(
 ) callconv(.c) c_int {
     if (workers == 0 or callback == null) return -22; // EINVAL
     const cap: usize = if (queue_capacity > 0) queue_capacity else 256;
+    if (!std.math.isPowerOfTwo(cap) or cap < 2) return -22; // EINVAL
 
     const pool = DynamicPool.init(
         std.heap.c_allocator,
@@ -223,7 +224,10 @@ export fn awp_zig_pool_create(
         cap,
         callback.?,
         user,
-    ) catch return -12; // ENOMEM
+    ) catch |err| {
+        if (err == error.InvalidCapacity) return -22; // EINVAL
+        return -12; // ENOMEM
+    };
 
     out_pool.* = @ptrCast(pool);
     return 0;

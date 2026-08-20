@@ -159,14 +159,14 @@ pub fn main() !void {
     std.debug.print("Raw Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ r_throughput / 1e6, r_duration_ns / 1e6 });
     std.debug.print("Raw Ring Mean Hop Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ r_avg_lat, r_avg_lat / 1000.0, r_sum });
 
-    // 3. Concurrent Ultra-Fast SPSC Ring (0 CAS, Cached Head/Tail)
-    std.debug.print("=== Zig 0.16 Concurrent Ultra-Fast SPSC Ring (0 CAS, Cached Indices) ===\n", .{});
-    const Spsc = awp.SpscRing(QUEUE_CAP);
-    var spsc = try Spsc.init(backing_allocator);
+    // 3. Concurrent Ultra-Fast SPSC Ring (4KB Frame)
+    std.debug.print("=== Zig 0.16 Concurrent Ultra-Fast SPSC Ring (4KB Frame, 0 CAS) ===\n", .{});
+    const FrameSpsc = awp.FrameSpscRing(QUEUE_CAP);
+    var spsc = try FrameSpsc.init(backing_allocator);
     defer spsc.deinit();
 
     const SpscContext = struct {
-        ring: *Spsc,
+        ring: *FrameSpsc,
         n: usize,
         ready: std.atomic.Value(bool),
         done: std.atomic.Value(bool),
@@ -178,8 +178,9 @@ pub fn main() !void {
             var got: usize = 0;
             var sum: u64 = 0;
             while (got < ctx.n) {
-                if (ctx.ring.tryPop()) |frame| {
+                if (ctx.ring.peek()) |frame| {
                     sum +%= awp.fastSum64(frame.payload[0..64]);
+                    ctx.ring.consume();
                     got += 1;
                 } else {
                     std.atomic.spinLoopHint();
@@ -217,51 +218,14 @@ pub fn main() !void {
     const s_throughput = @as(f64, @floatFromInt(NUM_MSGS)) / s_duration_sec;
     const s_avg_lat = s_duration_ns / @as(f64, @floatFromInt(NUM_MSGS));
 
-    std.debug.print("Concurrent SPSC Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ s_throughput / 1e6, s_duration_ns / 1e6 });
-    std.debug.print("Concurrent SPSC Mean Hop Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ s_avg_lat, s_avg_lat / 1000.0, spsc_ctx.csum.load(.monotonic) });
+    std.debug.print("Concurrent 4KB SPSC Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ s_throughput / 1e6, s_duration_ns / 1e6 });
+    std.debug.print("Concurrent 4KB SPSC Hop Period: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ s_avg_lat, s_avg_lat / 1000.0, spsc_ctx.csum.load(.monotonic) });
 
     // 4. Raw Pointer Passing SPSC Ring (Exact Equivalent to C bench_ring.c SPSC)
     std.debug.print("=== Zig 0.16 Pure Pointer SPSC Ring (Exact Equivalent to C bench_ring.c) ===\n", .{});
-    const PtrSpsc = struct {
-        const Cap = QUEUE_CAP;
-        const Mask = Cap - 1;
-        slots: [*]usize,
-        head: std.atomic.Value(usize) align(64) = std.atomic.Value(usize).init(0),
-        cached_tail: usize align(64) = 0,
-        tail: std.atomic.Value(usize) align(64) = std.atomic.Value(usize).init(0),
-        cached_head: usize align(64) = 0,
-
-        pub inline fn push(self: *@This(), val: usize) bool {
-            const h = self.head.load(.monotonic);
-            if (h - self.cached_tail >= Cap) {
-                self.cached_tail = self.tail.load(.acquire);
-                if (h - self.cached_tail >= Cap) {
-                    @branchHint(.unlikely);
-                    return false;
-                }
-            }
-            self.slots[h & Mask] = val;
-            self.head.store(h + 1, .release);
-            return true;
-        }
-
-        pub inline fn pop(self: *@This()) ?usize {
-            const t = self.tail.load(.monotonic);
-            if (self.cached_head == t) {
-                self.cached_head = self.head.load(.acquire);
-                if (self.cached_head == t) {
-                    @branchHint(.unlikely);
-                    return null;
-                }
-            }
-            const val = self.slots[t & Mask];
-            self.tail.store(t + 1, .release);
-            return val;
-        }
-    };
-
-    var raw_slots: [QUEUE_CAP]usize align(64) = undefined;
-    var ptr_ring = PtrSpsc{ .slots = &raw_slots };
+    const PtrSpsc = awp.SpscRing(usize, QUEUE_CAP);
+    var ptr_ring = try PtrSpsc.init(backing_allocator);
+    defer ptr_ring.deinit();
 
     const PtrCtx = struct {
         ring: *PtrSpsc,
@@ -274,7 +238,7 @@ pub fn main() !void {
             ctx.ready.store(true, .release);
             var got: usize = 0;
             while (got < ctx.n) {
-                if (ctx.ring.pop()) |_| {
+                if (ctx.ring.popValue()) |_| {
                     got += 1;
                 } else {
                     std.atomic.spinLoopHint();
@@ -299,7 +263,7 @@ pub fn main() !void {
     const p_t0 = awp.nowNs();
 
     for (0..PTR_MSGS) |i| {
-        while (!ptr_ring.push(i)) {
+        while (!ptr_ring.pushValue(i)) {
             std.atomic.spinLoopHint();
         }
     }
@@ -312,7 +276,80 @@ pub fn main() !void {
     const p_avg_lat = p_duration_ns / @as(f64, @floatFromInt(PTR_MSGS));
 
     std.debug.print("Pure SPSC Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ p_throughput / 1e6, p_duration_ns / 1e6 });
-    std.debug.print("Pure SPSC Ring Mean Latency: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });
+    std.debug.print("Pure SPSC Ring Hop Period: {d:.2} ns ({d:.4} µs)\n\n", .{ p_avg_lat, p_avg_lat / 1000.0 });
+
+    // 5. Phase 2: Generic 64-Byte Cacheline POD SPSC Ring (BookUpdate64)
+    std.debug.print("=== Zig 0.16 Generic 64-Byte Cacheline POD Ring (BookUpdate64) ===\n", .{});
+    const PodSpsc = awp.Spsc64Ring(awp.BookUpdate64, QUEUE_CAP);
+    var pod_ring = try PodSpsc.init(backing_allocator);
+    defer pod_ring.deinit();
+
+    const POD_MSGS = 5_000_000;
+    const PodCtx = struct {
+        ring: *PodSpsc,
+        n: usize,
+        ready: std.atomic.Value(bool),
+        done: std.atomic.Value(bool),
+        csum: std.atomic.Value(u64),
+
+        fn runConsumer(ctx: *@This()) void {
+            awp.pinToPerformanceCores();
+            ctx.ready.store(true, .release);
+            var got: usize = 0;
+            var sum: u64 = 0;
+            while (got < ctx.n) {
+                if (ctx.ring.popValue()) |item| {
+                    sum +%= item.seq +% @as(u64, @bitCast(item.bid_price));
+                    got += 1;
+                } else {
+                    std.atomic.spinLoopHint();
+                }
+            }
+            ctx.csum.store(sum, .release);
+            ctx.done.store(true, .release);
+        }
+    };
+
+    var pod_ctx = PodCtx{
+        .ring = &pod_ring,
+        .n = POD_MSGS,
+        .ready = std.atomic.Value(bool).init(false),
+        .done = std.atomic.Value(bool).init(false),
+        .csum = std.atomic.Value(u64).init(0),
+    };
+
+    const pod_sample = awp.BookUpdate64{
+        .timestamp_ns = 1_000_000,
+        .seq = 1,
+        .symbol_id = 100,
+        .flags = 2,
+        .bid_price = 50000.25,
+        .bid_qty = 1.5,
+        .ask_price = 50000.50,
+        .ask_qty = 3.0,
+    };
+
+    const pod_cons_thread = try std.Thread.spawn(.{}, PodCtx.runConsumer, .{&pod_ctx});
+    while (!pod_ctx.ready.load(.acquire)) {
+        std.atomic.spinLoopHint();
+    }
+    const pod_t0 = awp.nowNs();
+
+    for (0..POD_MSGS) |_| {
+        while (!pod_ring.tryPush(&pod_sample)) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pod_cons_thread.join();
+    const pod_t1 = awp.nowNs();
+    const pod_duration_ns = @as(f64, @floatFromInt(pod_t1 - pod_t0));
+    const pod_duration_sec = pod_duration_ns / 1_000_000_000.0;
+    const pod_throughput = @as(f64, @floatFromInt(POD_MSGS)) / pod_duration_sec;
+    const pod_avg_lat = pod_duration_ns / @as(f64, @floatFromInt(POD_MSGS));
+
+    std.debug.print("64-Byte POD SPSC Ring Throughput: {d:.2} M ops/sec (Wall: {d:.2} ms)\n", .{ pod_throughput / 1e6, pod_duration_ns / 1e6 });
+    std.debug.print("64-Byte POD SPSC Mean Latency: {d:.2} ns ({d:.4} µs) | Checksum: {d}\n\n", .{ pod_avg_lat, pod_avg_lat / 1000.0, pod_ctx.csum.load(.monotonic) });
 
     var json_path: ?[]const u8 = null;
     const env_val = c_stdio.getenv("BENCH_JSON_OUT");
@@ -338,7 +375,9 @@ pub fn main() !void {
             \\  "pool_p9999_ns": {d},
             \\  "pool_max_ns": {d},
             \\  "spsc_throughput_mops": {d:.2},
-            \\  "spsc_mean_ns": {d:.2}
+            \\  "spsc_mean_ns": {d:.2},
+            \\  "spsc64_throughput_mops": {d:.2},
+            \\  "spsc64_mean_ns": {d:.2}
             \\}}
             \\
         , .{
@@ -356,6 +395,8 @@ pub fn main() !void {
             max_lat,
             p_throughput / 1e6,
             p_avg_lat,
+            pod_throughput / 1e6,
+            pod_avg_lat,
         });
         var path_z: [1024:0]u8 = undefined;
         @memcpy(path_z[0..path.len], path);

@@ -90,3 +90,60 @@ fn test_zig_zero_copy_claim_and_typed_struct() {
 
     assert_eq!(processed.load(Ordering::Acquire), 50);
 }
+
+#[test]
+fn test_zig_book_update_64b_pod() {
+    assert_eq!(std::mem::size_of::<awp_zig_rs::BookUpdate64>(), 64);
+    assert_eq!(std::mem::size_of::<awp_zig_rs::Trade64>(), 64);
+
+    let processed = Arc::new(AtomicUsize::new(0));
+    let proc_clone = processed.clone();
+
+    let pool = AsyncWorkerPool::new(4, 256, move |frame| {
+        let book = frame
+            .payload_as::<awp_zig_rs::BookUpdate64>()
+            .expect("Failed to cast payload as BookUpdate64");
+        assert_eq!(book.seq, 1001);
+        assert_eq!(book.symbol_id, 42);
+        assert_eq!(book.bid_price, 50_000.50);
+        assert_eq!(book.bid_qty, 1.25);
+        assert_eq!(book.ask_price, 50_001.00);
+        assert_eq!(book.ask_qty, 2.50);
+
+        proc_clone.fetch_add(1, Ordering::Release);
+        0
+    })
+    .expect("Failed to create Zig pool");
+
+    for _ in 0..100 {
+        let mut guard = loop {
+            match pool.claim(0) {
+                Ok(g) => break g,
+                Err(_) => thread::yield_now(),
+            }
+        };
+
+        let update = awp_zig_rs::BookUpdate64 {
+            timestamp_ns: 1_234_567,
+            seq: 1001,
+            symbol_id: 42,
+            flags: 2,
+            bid_price: 50_000.50,
+            bid_qty: 1.25,
+            ask_price: 50_001.00,
+            ask_qty: 2.50,
+            _reserved: [0; 8],
+        };
+
+        guard.write_struct(&update).unwrap();
+        guard.commit().expect("Commit failed");
+    }
+
+    let mut waited = 0;
+    while processed.load(Ordering::Acquire) < 100 && waited < 100 {
+        thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+
+    assert_eq!(processed.load(Ordering::Acquire), 100);
+}

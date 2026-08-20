@@ -19,10 +19,23 @@ High-performance benchmarks for `async-worker-pool_zig` comparing native Zig 0.1
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (4 Pinned Workers) | **5.38 M msg/sec** 🚀 | **< 100 ns** | **1.00 µs** (1,000 ns) | **547.0 ns** (0.55 µs) |
 | **`async-worker-pool_zig`** | Zig 0.16 | Pure Pointer SPSC Ring (0 CAS) | **171.76 M ops/sec** 🚀 | **< 6 ns** | **< 8 ns** | **5.82 ns** |
+| **`async-worker-pool_zig`** (Phase 2) | Zig 0.16 | 64-Byte POD Cacheline Ring (`BookUpdate64`) | **28.54 M ops/sec** 🚀 | **< 30 ns** | **< 45 ns** | **35.03 ns** |
 | **`awp-zig-rs`** ([`bindings/rust`](../bindings/rust)) | Rust on Zig 0.16 | Safe Rust FFI Zero-Copy | **5.45 M msg/sec** 🚀 | **< 150 ns** | **3.80 µs** (3,800 ns) | **920.0 ns** (0.92 µs) |
 | **`async-worker-pool`** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3.46 µs** (3,458 ns) | **1.11 ms** (1,110,000 ns) | **2.11 µs** (2,109 ns) |
 | **`async-worker-pool`** | C11 | Raw SPSC Ring | **62.50 M ops/sec** | **< 16 ns** | **< 20 ns** | **16.00 ns** |
 | **`awp-rs`** | Rust on C11 | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3.35 µs** (3,350 ns) | **1.15 ms** (1,150,000 ns) | **1.87 µs** (1,870 ns) |
+
+---
+
+### Historical Benchmark Evolution Ledger
+
+Tracked strictly against Git milestone commits in [`benchmarks/history.json`](../benchmarks/history.json):
+
+| Milestone / Phase | Git Commit | Pool Throughput | Pool Mean Latency | p99 Tail Latency | Pure SPSC Ring | 64B POD Ring |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Phase 0: Initial Zig Port** | `e228513` | 5.33 M msg/s | 2,330.7 ns | 102.00 µs | 98.1 M ops/s (10.2 ns) | N/A |
+| **Phase 1: Hardware Hardening & HugePages** | `249e3f2` | 5.38 M msg/s | 547.0 ns | 1.00 µs | 171.8 M ops/s (5.82 ns) | N/A |
+| **Phase 2: Generic 64B POD SPSC Ring** | *Current* | **5.62 M msg/s** | **405.9 ns** | **1.00 µs** | **161.4 M ops/s (6.20 ns)** | **28.54 M ops/s (35.0 ns)** |
 
 ---
 
