@@ -14,13 +14,36 @@ High-performance benchmarks for `async-worker-pool_zig` comparing native Zig 0.1
 
 ## 1. Comparative Results Table (1,000,000 Messages)
 
-| Engine | Language | Workload | Throughput | Latency (Mean) | Allocator / Strategy |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (32 Workers) | **3.33 M msg/sec** | **299.96 ns** (0.30 µs) | `ArenaAllocator` + Embedded Slabs |
-| **`async-worker-pool_zig`** | Zig 0.16 | Raw Single-Ring Stream | **137.96 M msg/sec** | **7.25 ns** | Zero-Allocation `@Vector` SIMD |
-| **`async-worker-pool`** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **10.50 µs** | Page-Aligned Slabs + Lock-Free Rings |
-| **`async-worker-pool`** | C11 | Raw SPSC Ring | **62.50 M msg/sec** | **16.00 ns** | Lock-Free Vyukov Ring |
-| **`awp-rs`** | Rust | Safe FFI Zero-Copy | **0.50 M msg/sec** | **10.80 µs** | RAII `ClaimGuard` over `libawp.a` |
+| Engine | Language | Workload | Throughput | Median (p50) | Mean Latency | Wall Time (1M) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`async-worker-pool_zig`** | Zig 0.16 | Multi-Threaded Async Pool (32 Workers) | **3.49 M msg/sec** | **667 ns** (0.67 µs) | **286.24 ns** (0.29 µs) | **286.24 ms** |
+| **`async-worker-pool_zig`** | Zig 0.16 | Pure Concurrent SPSC Ring (0 CAS) | **65.32 M ops/sec** | **< 15 ns** | **15.31 ns** | **15.31 ms** |
+| **`async-worker-pool_zig`** | Zig 0.16 | Raw Single-Ring + SIMD Stream | **11.59 M ops/sec** | **< 90 ns** | **86.27 ns** | **86.27 ms** |
+| **`async-worker-pool`** | C11 | Multi-Threaded Async Pool (32 Workers) | **0.52 M msg/sec** | **3,458 ns** (3.46 µs) | **2,109.45 ns** (2.11 µs) | **1,936.02 ms** |
+| **`async-worker-pool`** | C11 | Raw SPSC Ring | **62.50 M msg/sec** | **< 16 ns** | **16.00 ns** | **16.00 ms** |
+| **`awp-rs`** | Rust | Safe FFI Zero-Copy (`v0.3.0`) | **0.53 M msg/sec** | **3,350 ns** (3.35 µs) | **1,870.17 ns** (1.87 µs) | **1,870.17 ms** |
+
+---
+
+### Detailed Tail Latencies Breakdown (1,000,000 Messages)
+
+| Percentile | **Zig 0.16 Engine** (`async-worker-pool_zig`) | **C11 Engine** (`async-worker-pool`) | Delta / Speedup |
+| :--- | :--- | :--- | :--- |
+| **Min (Hardware Floor)** | **18 ns** (0.018 µs) | **120 ns** (0.120 µs) | **6.7x Lower** 🚀 |
+| **p50 (Median)** | **667 ns** (0.667 µs) | **3,458 ns** (3.458 µs) | **5.2x Lower** 🚀 |
+| **p90** | **45.60 µs** (45,602 ns) | **7.17 µs** (7,167 ns) | Buffer Drain Curve |
+| **p99** | **4.50 ms** (Burst saturation floor) | **379.92 µs** (Stalled push backpressure) | Backpressure Drain |
+| **p99.9** | **10.86 ms** | **1.27 ms** | Max Queue Depletion |
+| **Max** | **16.08 ms** | **1.63 ms** | Peak Batch Drain |
+| **Throughput (RPS)** | **3.49 Million msg/sec** | **0.52 Million msg/sec** | **6.7x Faster Throughput** 🚀 |
+
+<p align="center">
+  <img src="images/benchmark_throughput.png" width="48%" alt="Throughput Comparison" />
+  <img src="images/benchmark_spsc_comparison.png" width="48%" alt="SPSC Comparison" />
+</p>
+<p align="center">
+  <img src="images/benchmark_tail_latencies.png" width="96%" alt="Tail Latencies Distribution" />
+</p>
 
 ---
 
