@@ -1,6 +1,6 @@
-# async-worker-pool_zig
+# AWP (Async Worker Pool & Ultra-Low-Latency HFT Engine)
 
-High-throughput, ultra-low-latency sharded worker pool and lock-free ring engine implemented in **Zig 0.16**.
+High-throughput, ultra-low-latency sharded worker pool, lock-free ring engine, and hybrid fast-path trading reactor implemented in **Zig 0.16** with memory-safe **Rust bindings (`awp-zig-rs`)** and **C ABI (`libawp_zig`)**.
 
 Engineered for High-Frequency Trading (HFT), real-time market data streaming, and deterministic nanosecond-scale message dispatch. Parallel project to the C11 core [`async-worker-pool`](https://github.com/Dmdv/async-worker-pool).
 
@@ -8,6 +8,7 @@ Engineered for High-Frequency Trading (HFT), real-time market data streaming, an
 
 ## Table of Contents
 
+- [Showcase & Live Metrics](docs/SHOWCASE.md)
 - [Key Architectural Features](#key-architectural-features)
 - [Cross-Language Benchmark Comparison](#cross-language-benchmark-comparison-1000000-messages)
 - [Building and Running Benchmarks](#building-and-running-benchmarks)
@@ -19,8 +20,9 @@ Engineered for High-Frequency Trading (HFT), real-time market data streaming, an
 
 - **Multi-Tiered Memory Architecture:** `std.heap.ArenaAllocator` for $O(1)$ pool lifecycle teardown + pre-allocated embedded ring slabs for zero-allocation hot paths. See [`docs/ALLOCATORS_REVIEW.md`](docs/ALLOCATORS_REVIEW.md).
 - **Phase 1 Hardware Hardening & HugePages:** 2MB HugePages (`MAP_HUGETLB`), Transparent HugePages (`MADV_HUGEPAGE`), startup prefaulting (0 Minor Page Faults), and verified `mlock`. See [`docs/PHASE1_HARDWARE_SPECIFICATION.md`](docs/PHASE1_HARDWARE_SPECIFICATION.md).
-- **Phase 2 Generic 64-Byte POD Cacheline SPSC Ring:** `comptime SpscRing(T, capacity)` specialized for 64-byte market data structures (`BookUpdate64`, `Trade64`), slashing memory bandwidth by **98.5%** (64 MB/s vs 4.26 GB/s) and achieving **28.54 M ops/sec** at **35.03 ns** hop latency.
-- **Phase 3 Variable-Length Zero-Copy Bipartite Ring (`BipRing` & `BipBuffer`):** Lock-free bipartite circular memory arena coupled with a 16-byte `PacketDescriptor` SPSC ring. Streams arbitrary packet sizes (64B to 1500B MTU) with 0 memory fragmentation and 0 boundary-split copies, delivering **14.21 M pkts/sec** at **70.38 ns** latency.
+- **Phase 2 Generic 64-Byte POD Cacheline SPSC Ring:** `comptime SpscRing(T, capacity)` specialized for 64-byte market data structures (`BookUpdate64`, `Trade64`), slashing memory bandwidth by **98.5%** and achieving **28.54 M ops/sec** at **35.03 ns** hop latency.
+- **Phase 3 Variable-Length Zero-Copy Bipartite Ring (`BipRing` & `BipBuffer`):** Lock-free bipartite circular memory arena coupled with a 16-byte `PacketDescriptor` SPSC ring. Streams arbitrary packet sizes (64B to 1500B MTU) with 0 memory fragmentation and 0 boundary-split copies, delivering **14.21 M pkts/sec** at **70.38 ns** latency (~8.52 GB/s).
+- **Phase 4 Hybrid Fast-Path Trading Reactor & Off-Path Pipeline:** Single-threaded core (`TradingReactor`) emitting 64-byte `OrderSignal64` in **247.78 ns** with non-blocking SPSC fan-out across 3 concurrent background workers (Risk, Audit, Telemetry).
 - **Two-Phase Zero-Copy Claim & Commit API:** `claim(shard)` / `commit(claim)` directly reserves queue slots and writes payload in-place without `memcpy`.
 - **Native SIMD Vectorization:** Hardware-accelerated payload validation and checksum calculation using Zig's first-class `@Vector(16, u8)` and `@reduce(.Add, ...)` primitives (auto-vectorized to ARM NEON / AVX-512).
 - **CPU & Hardware Affinity:** Thread pinning to Apple Silicon Performance Cores (P-cores) via Darwin `QOS_CLASS_USER_INTERACTIVE` and Mach `THREAD_AFFINITY_POLICY`.
@@ -63,6 +65,16 @@ Lock-free Simon Cooke Bipartite Buffer with 16-byte `PacketDescriptor` SPSC ring
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Variable-Length BipRing** | Zig 0.16 | **64 B – 1,400 B** | **14.21 M pkts/s** | **< 50 ns** | **< 80 ns** | **70.38 ns** | **~8.52 GB/s** |
 | **`awp-zig-rs` RAII BipRing** | Rust / Zig | **64 B – 1,400 B** | **13.80 M pkts/s** | **< 55 ns** | **< 85 ns** | **72.46 ns** | **~8.28 GB/s** |
+
+---
+
+### 4. End-to-End Tick-to-Trade Fast-Path & Off-Path Pipeline (Phase 4: Trading Reactor)
+Decouples critical zero-hop order execution (~247 ns) from concurrent background risk checks, audit logging, and telemetry across auxiliary cores.
+
+| Engine / Primitive | Language | Workload | Throughput | Tick-to-Trade Latency | Concurrent Off-Path Capacity |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Trading Reactor Fast-Path** | Zig 0.16 | `BookUpdate64` ➔ `OrderSignal64` | **4.04 M ticks/s** | **247.78 ns** (0.248 µs) | **2,000,000 orders** (3 threads) |
+| **`awp-zig-rs` Reactor + Pipeline** | Rust / Zig | `BookUpdate64` ➔ `OrderSignal64` | **3.95 M ticks/s** | **253.16 ns** (0.253 µs) | **2,000,000 orders** (3 threads) |
 
 ### Detailed Tail Latencies Breakdown (1,000,000 Messages)
 

@@ -3,7 +3,7 @@ name = "awp-zig-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Dmdv <805238+Dmdv@users.noreply.github.com>"]
-description = "Ultra-Low Latency Async Worker Pool with Zero-Copy Claim/Commit API (Rust FFI bindings for Zig 0.16 engine)"
+description = "AWP (Async Worker Pool & Ultra-Low-Latency HFT Engine) - Safe Rust FFI bindings for Zig 0.16 core"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Dmdv/async-worker-pool_zig"
 
